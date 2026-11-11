@@ -1,0 +1,62 @@
+# ---- firmware / simulation build outputs --------------------------------
+sw/build/
+sim/obj_dir/
+sim/obj_fast/
+sim/obj_*/
+sim/work/
+sim/host/spx_kat
+sim/host/spx_kat_*
+*.exe
+*.elf
+*.o
+*.a
+*.gch
+*.d
+
+# ---- simulation logs / traces -------------------------------------------
+cpu_trace.log
+*_trace.log
+sim.log
+
+# ---- waveforms ------------------------------------------------------------
+*.vcd
+*.fst
+*.fst.hier
+*.fsdb
+*.vpd
+*.wlf
+*.wdb
+*.ghw
+*.saif
+*.shm/
+*.trn
+*.dsn
+
+# ---- Vivado / xsim project outputs --------------------------------------
+.Xil/
+xsim.dir/
+*.runs/
+*.cache/
+*.hw/
+*.sim/
+*.ip_user_files/
+*.gen/
+*.jou
+vivado*.log
+vivado*.str
+vivado_pid*.zip
+webtalk*
+*.backup.*
+*.dcp
+*.bit
+*.bin.bit
+*.ltx
+*.mmi
+usage_statistics_webtalk.*
+
+# ---- editors / OS ---------------------------------------------------------
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db

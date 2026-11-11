@@ -1,0 +1,14 @@
+# UART input for the SPHINCS+ app. Edit freely, then:
+#   make run PROG=sphincs SPX=128f RX=rx.txt               (Verilator)
+#   make run PROG=sphincs SPX=128f RX=rx.txt TARGET=host   (gcc, compared with Verilator)
+# Commands: I B P K  Q <seed>  S <msg>  D <optrand> <msg>  V <pk> <msg> <sig>  raw <bytes>
+# Values: "text", hex (0011aabb), @file.  Full list: sim/host/rxgen.py
+# Verilator stops by itself after the last command; MAX_CYCLES is only a safety
+# limit: K takes ~450 M cycles and S ~11 G cycles (128f), so for those use
+#   make run PROG=sphincs SPX=128f RX=rx.txt MAX_CYCLES=12000000000
+
+I                   # info: clock, key/signature sizes
+B                   # Keccak benchmark
+K                   # make a key pair (fixed seed with RNG=det)
+P                   # print the public key
+S "hello wasp"      # sign this message, the device then verifies it

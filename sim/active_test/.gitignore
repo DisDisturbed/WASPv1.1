@@ -1,0 +1,3 @@
+# Scratch area for `make -C sim wave`: memory images and run outputs stay local.
+*
+!.gitignore

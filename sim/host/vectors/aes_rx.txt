@@ -1,0 +1,4 @@
+# UART input for the AES app: every 16 bytes are encrypted and sent back.
+#   make run PROG=aes RX=sim/host/vectors/aes_rx.txt [TARGET=host]
+raw 00112233445566778899aabbccddeeff
+raw "sixteen byte msg"
