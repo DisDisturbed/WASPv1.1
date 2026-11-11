@@ -348,7 +348,7 @@ module Core_Top
 
     logic [DATA_WIDTH-1:0] ex_combinational_res;
 
-    //  EX (i missed her)
+    //  EX (why did she choose a misunderstanding over me)
     EX_stage #(
         .DATA_WIDTH     (DATA_WIDTH),
         .REG_ADDR_WIDTH (RF_ADDR_WIDTH)

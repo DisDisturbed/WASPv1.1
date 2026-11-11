@@ -1,7 +1,6 @@
 `timescale 1ns / 1ps
 `default_nettype none
 // alu_control_i encoding intentionally stays a raw vector, not a core_pkg
-// enum -- see core_pkg.sv header ("WHAT WAS DELIBERATELY *NOT* PROMOTED").
 // This module's own case statement is ALU's actual source of truth for the
 // encoding; putting a guessed enum in core_pkg would risk a second, wrong
 // definition instead of preventing a duplicate one.
