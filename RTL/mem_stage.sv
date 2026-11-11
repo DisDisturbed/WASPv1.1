@@ -33,6 +33,16 @@ module MEM_stage
 
     output logic [DATA_WIDTH-1:0] mem_forward_data_o,
 
+    // exception that still needs its PC redirect: misaligned load/store
+    // (detected here) or a trap raised in EX. ID-raised traps were already
+    // redirected when they were taken, so they are excluded.
+    output logic              mem_exc_o,
+
+    // FENCE.I cache maintenance: held while FENCE.I sits in MEM; the
+    // caches answer with a one-cycle done after the D-cache write-back
+    output logic              fencei_req_o,
+    input  wire               fencei_done_i,
+
     output mem_wb_bundle_t    mem_wb_o,
     output logic [DATA_WIDTH-1:0] mem_jump_target_o
 );
@@ -41,7 +51,9 @@ module MEM_stage
     assign data_req_ex_w = ex_mem_i.is_load | ex_mem_i.is_store;
 
     logic [DATA_WIDTH-1:0] lsu_rdata_w;
-    logic                  lsu_trap_w;
+    logic                  lsu_trap_raw_w;      // incoming trap or misaligned (from the LSU)
+    logic [5:0]            lsu_trap_cause_raw_w;
+    logic                  lsu_trap_w;          // + bus error on this instruction's access
     logic [5:0]            lsu_trap_cause_w;
     logic                  lsu_raw_busy;
 
@@ -81,10 +93,28 @@ module MEM_stage
     assign lsu_bus.gnt    = data_bus.gnt;
     assign lsu_bus.rvalid = data_bus.rvalid;
     assign lsu_bus.rdata  = data_bus.rdata;
+    assign lsu_bus.err    = data_bus.err;
+
+    // Access fault: err on the response that belongs to this instruction's
+    // own access -- gnt+rvalid in the same cycle (D-cache, error responder;
+    // the only slaves that can fail, so stores see it at gnt), or the
+    // rvalid a load is waiting for.
+    logic bus_resp_w, bus_fault_w;
+    assign bus_resp_w  = (lsu_bus.req & ~wait_rvalid_q & data_bus.gnt & data_bus.rvalid) |
+                         (wait_rvalid_q & data_bus.rvalid);
+    assign bus_fault_w = bus_resp_w & data_bus.err;
+
+    assign lsu_trap_w       = lsu_trap_raw_w | bus_fault_w;
+    assign lsu_trap_cause_w = lsu_trap_raw_w     ? lsu_trap_cause_raw_w :
+                              ex_mem_i.is_store  ? TRAP_CAUSE_STORE_ACCESS_FAULT
+                                                 : TRAP_CAUSE_LOAD_ACCESS_FAULT;
 
     // -----------------------------------------------------------------------
     assign lsu_busy_o = (lsu_bus.req & ~wait_rvalid_q & (~data_bus.gnt | (ex_mem_i.is_load & ~data_bus.rvalid)))
-                      | (wait_rvalid_q & ~data_bus.rvalid);
+                      | (wait_rvalid_q & ~data_bus.rvalid)
+                      | (ex_mem_i.fencei & ~fencei_done_i);   // FENCE.I: wait for the caches
+
+    assign fencei_req_o = ex_mem_i.fencei;
 
     load_store_unit lsu_inst (
         .clk              (clk),
@@ -97,13 +127,15 @@ module MEM_stage
         .data_rdata_ex_o  (lsu_rdata_w),
         .data_req_ex_i    (data_req_ex_w),
 
-        .lsu_trap_o       (lsu_trap_w),
-        .lsu_trap_cause_o (lsu_trap_cause_w),
+        .lsu_trap_o       (lsu_trap_raw_w),
+        .lsu_trap_cause_o (lsu_trap_cause_raw_w),
 
         .lsu_ready_ex_o     (lsu_ready_ex_o),
         .lsu_ready_commit_o (lsu_ready_commit_o),
         .lsu_busy_o         (lsu_raw_busy)
     );
+
+    assign mem_exc_o = ex_mem_i.trap ? ex_mem_i.trap_late : lsu_trap_w;
 
     always_comb begin : fwd_mux
         mem_forward_data_o = ex_mem_i.is_load ? lsu_rdata_w : ex_mem_alu_res;
@@ -127,6 +159,8 @@ module MEM_stage
             mem_wb_o.reg_write  <= ex_mem_rf_we;
             mem_wb_o.trap       <= lsu_trap_w;
             mem_wb_o.trap_cause <= lsu_trap_cause_w;
+            mem_wb_o.tval       <= ex_mem_i.trap ? ex_mem_i.tval :
+                                   lsu_trap_w    ? ex_mem_alu_res : '0;   // misaligned / faulting address
             mem_wb_o.csr_addr   <= ex_mem_i.csr_addr;
             mem_wb_o.csr_op     <= ex_mem_i.csr_op;
             mem_wb_o.csr_wdata  <= ex_mem_i.csr_wdata;

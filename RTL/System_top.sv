@@ -18,7 +18,10 @@ module system_top #(
     //     0xC000_4000  spare AXI slot   (crossbar M03)
     //     0xC000_5000  spare AXI slot   (crossbar M04)
     //     0xC000_6000  spare AXI slot   (crossbar M05)
-    //   anything else is unmapped (AXI DECERR)
+    //   anything else is unmapped: load/store access fault (mcause 5/7),
+    //   and so is a store to IMEM or an access to a spare slot whose
+    //   SLOT_PRESENT bit is 0. Instruction fetch outside IMEM/DMEM:
+    //   instruction access fault (mcause 1). See cache_system_top.sv.
     parameter     IMEM_BASE     = 32'h40000000,
     parameter     DMEM_BASE     = 32'h80000000,
     parameter     BOOT_ADDR     = IMEM_BASE,        // drive boot_addr_in with this
@@ -30,6 +33,8 @@ module system_top #(
     parameter     SLOT3_BASE    = PERIPH_BASE + 32'h4000,
     parameter     SLOT4_BASE    = PERIPH_BASE + 32'h5000,
     parameter     SLOT5_BASE    = PERIPH_BASE + 32'h6000,
+    // set bit n-3 when a slave is connected to crossbar port M0n (n = 3..5)
+    parameter logic [2:0] SLOT_PRESENT = 3'b000,
 
     // Core clock produced by clk_wiz_0 (clk_out1). Exposed to software through
     // the CLINT clk_freq register; Constrait/check_clk_freq.tcl compares it
@@ -250,6 +255,13 @@ module system_top #(
         .DCACHE_FLUSH_ADDR (DCACHE_FLUSH_ADDR),
         .DMEM_BASE     (DMEM_BASE),
         .DMEM_ADDR_WIDTH (DMEM_ADDR_WIDTH),
+        .IMEM_BASE     (IMEM_BASE),
+        .IMEM_ADDR_WIDTH (IMEM_ADDR_WIDTH),
+        .UART_BASE     (UART_BASE),
+        .SLOT3_BASE    (SLOT3_BASE),
+        .SLOT4_BASE    (SLOT4_BASE),
+        .SLOT5_BASE    (SLOT5_BASE),
+        .SLOT_PRESENT  (SLOT_PRESENT),
         .CLK_FREQ_HZ   (CLK_FREQ_HZ)
     ) u_cache_system (
         .clk_100mhz_in (clk_100mhz_in),

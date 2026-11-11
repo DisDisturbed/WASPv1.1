@@ -54,6 +54,7 @@ module control_unit
     // csr and trap
     output logic        csr_access_o,
     output logic        mret_o,
+    output logic        fencei_o,        // FENCE.I (Zifencei)
     output logic        ecall_o,
     output logic        ebreak_o,
     output logic        illegal_instr_o
@@ -83,6 +84,7 @@ module control_unit
         OP_JALR   = 7'b110_0111,
         OP_LUI    = 7'b011_0111,
         OP_AUIPC  = 7'b001_0111,
+        OP_MISC_MEM = 7'b000_1111,
         OP_SYSTEM = 7'b111_0011} op_type;
 
     typedef enum logic [6:0] {
@@ -114,6 +116,33 @@ module control_unit
 
     imm_sel_e imm_sel;
 
+    // CSR address check (Zicsr). An access to a CSR that does not exist, or a
+    // write to a read-only one (addr[11:10] == 2'b11), is an illegal
+    // instruction. `wr` = the instruction writes the CSR: CSRRW/CSRRWI always,
+    // CSRRS/CSRRC[I] only with rs1/uimm != 0.
+    // The legal set is that of Spike --isa=rv32im_zicsr_zifencei_zicntr
+    // --priv=m (probed address by address), plus mcounteren / scounteren,
+    // which WASP keeps for the U/S-mode work (sw/apps/counters). CSRs that
+    // exist but have no state here read 0 and ignore writes in csr_file:
+    // mstatush, mhpmevent3-31, mhpmcounter3-31(h), PMP (no regions) and the
+    // trigger CSRs (tdata1 = 0: no triggers; tcontrol 0x7A5 is not in
+    // Spike but kept legal: rv32mi-breakpoint probes it with an unaligned
+    // mtvec). Not present (illegal): S-mode CSRs, satp, medeleg/mideleg
+    // (M-only), hpmcounter3-31(h) (no Zihpm).
+    function automatic logic csr_legal(input logic [11:0] a, input logic wr);
+        logic exists;
+        exists = (a inside {12'h300, 12'h301, 12'h304, 12'h305, 12'h310, 12'h320,
+                            12'h306, 12'h106})                       // mcounteren, scounteren
+              || (a inside {[12'h323:12'h344]})                      // mhpmevent3-31, mscratch..mip
+              || (a inside {[12'h3A0:12'h3EF]})                      // pmpcfg0-15, pmpaddr0-63
+              || (a inside {[12'h7A0:12'h7A5], 12'h7A8})             // tselect, tdata1-3, tinfo, tcontrol, mcontext
+              || (a == 12'hB00) || (a inside {[12'hB02:12'hB1F]})    // mcycle, minstret, mhpmcounter3-31
+              || (a == 12'hB80) || (a inside {[12'hB82:12'hB9F]})    // ...h
+              || (a inside {[12'hC00:12'hC02], [12'hC80:12'hC82]})   // cycle/time/instret(h)
+              || (a inside {[12'hF11:12'hF15]});                     // mvendorid..mconfigptr
+        return exists && !(wr && a[11:10] == 2'b11);
+    endfunction
+
     // decoder
     always_comb begin : instruction_decoder
 
@@ -144,6 +173,7 @@ module control_unit
         csr_wdata_o     = '0;
 
         mret_o          = 1'b0;
+        fencei_o        = 1'b0;
         ecall_o         = 1'b0;
         ebreak_o        = 1'b0;
         illegal_instr_o = 1'b0;
@@ -268,6 +298,17 @@ module control_unit
                 imm_sel     = IMM_U;
             end
 
+            OP_MISC_MEM: begin
+                // FENCE (funct3 000, incl. FENCE.TSO / PAUSE): one in-order
+                // hart whose loads/stores complete before the next one
+                // issues -> nothing to order, executes as a NOP.
+                // FENCE.I (funct3 001, Zifencei): in MEM the D-cache writes
+                // back every dirty line, then the I-cache is invalidated and
+                // fetch restarts at pc+4 (MEM_stage / hazard_unit).
+                if (funct3 == 3'b001)      fencei_o        = 1'b1;
+                else if (funct3 != 3'b000) illegal_instr_o = 1'b1;
+            end
+
             OP_SYSTEM: begin
                      if (funct3 == 3'b000) begin
                          // MRET / ECALL / EBREAK / WFI
@@ -278,6 +319,12 @@ module control_unit
                          else illegal_instr_o = 1'b1;
                      end
                      else if (funct3[1:0] == 2'b00) begin
+                         illegal_instr_o = 1'b1;
+                     end
+                     else if (!csr_legal(instr_i[31:20],
+                                         funct3[1:0] == 2'b01 || instr_i[19:15] != 5'd0)) begin
+                         // non-existent CSR, or a write to a read-only one:
+                         // illegal instruction, no CSR / register side effects
                          illegal_instr_o = 1'b1;
                      end
                      else begin

@@ -55,14 +55,16 @@
     assign SLV.wdata = MST.wdata; \
     assign MST.gnt    = SLV.gnt; \
     assign MST.rvalid = SLV.rvalid; \
-    assign MST.rdata  = SLV.rdata;
+    assign MST.rdata  = SLV.rdata; \
+    assign MST.err    = SLV.err;
 
 `define OBI_INSTR_CONNECT(SLV, MST) \
     assign SLV.req  = MST.req; \
     assign SLV.addr = MST.addr; \
     assign MST.gnt    = SLV.gnt; \
     assign MST.rvalid = SLV.rvalid; \
-    assign MST.rdata  = SLV.rdata;
+    assign MST.rdata  = SLV.rdata; \
+    assign MST.err    = SLV.err;
 
 // ---- Tie-offs for a leg that legitimately has no connectee (optional
 //      peripherals, unused legs in a testbench, etc.) -- kept here for the
@@ -78,12 +80,14 @@
 `define OBI_DATA_TIE_OFF_SLAVE(SLV) \
     assign SLV.gnt    = 1'b0; \
     assign SLV.rvalid = 1'b0; \
-    assign SLV.rdata  = '0;
+    assign SLV.rdata  = '0; \
+    assign SLV.err    = 1'b0;
 
 `define OBI_INSTR_TIE_OFF_SLAVE(SLV) \
     assign SLV.gnt    = 1'b0; \
     assign SLV.rvalid = 1'b0; \
-    assign SLV.rdata  = '0;
+    assign SLV.rdata  = '0; \
+    assign SLV.err    = 1'b0;
 
 // ---- Tie off an unused irq_if source leg (e.g. a PLIC source index with
 //      no peripheral wired up in a given build).

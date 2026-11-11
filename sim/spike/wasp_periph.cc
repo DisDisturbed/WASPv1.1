@@ -5,8 +5,9 @@
 //   +0x1000 CLINT      compact layout; mtime counts retired instructions
 //                      (Spike: 1 instruction = 1 clock) through the prescaler
 //   +0x2000 PLIC       compact layout, nsrc sources (source 0 reserved)
-//   +0x3000 D-cache flush register (accepted, no effect: Spike has no D-cache)
-//   +0x4000..0x6FFF    spare slots, read 0
+//   +0x3000 D-cache flush register (write accepted, no effect: Spike has no
+//           D-cache; a read or another offset is an access fault, as on wasp)
+//   +0x4000..0x6FFF    spare slots: access fault (no slave, SLOT_PRESENT=0)
 //
 // spike --extlib=libwasp_periph.so --device=wasp_periph[,arg...]
 //   rx=<file>        UART RX bytes          (default uart_rx.bin, missing = empty)
@@ -90,8 +91,19 @@ class wasp_periph_t : public abstract_device_t {
 
   reg_t size() override { return WASP_PERIPH_SIZE; }
 
+  // Same access check as RTL/cache_system_top.sv: returning false makes
+  // Spike raise a load/store access fault with mtval = address.
+  static bool accessible(reg_t addr, bool store) {
+    switch (addr >> 12) {
+      case 0: case 1: case 2: return true;                // UART, CLINT, PLIC
+      case 3:  return store && (addr & 0xFFF) == 0;       // flush register: write only
+      default: return false;                              // spare slots, no slave
+    }
+  }
+
   bool load(reg_t addr, size_t len, uint8_t* bytes) override {
     if (len > 4 || (addr & 3) + len > 4) return false;
+    if (!accessible(addr, false)) return false;
     uint32_t v = read32(addr & ~reg_t(3));
     memcpy(bytes, reinterpret_cast<uint8_t*>(&v) + (addr & 3), len);
     return true;
@@ -99,6 +111,7 @@ class wasp_periph_t : public abstract_device_t {
 
   bool store(reg_t addr, size_t len, const uint8_t* bytes) override {
     if (len > 4 || (addr & 3) + len > 4) return false;
+    if (!accessible(addr, true)) return false;
     uint32_t v = 0, mask = 0;
     memcpy(reinterpret_cast<uint8_t*>(&v) + (addr & 3), bytes, len);
     memset(reinterpret_cast<uint8_t*>(&mask) + (addr & 3), 0xFF, len);

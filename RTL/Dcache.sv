@@ -25,6 +25,11 @@ module dcache #(
     // OBI data-memory slave port
     obi_data_if.slave core_bus,
 
+    // FENCE.I: write back (and invalidate) every line. Accepted in IDLE when
+    // the core has no request; flush_all_done_o pulses when the walk ends.
+    input  wire        flush_all_req_i,
+    output logic       flush_all_done_o,
+
     output logic        m_axi_awvalid,
     input  wire         m_axi_awready,
     output logic [31:0] m_axi_awaddr,
@@ -82,7 +87,9 @@ module dcache #(
         SERVE      = 4'd8,
         BP_WR_ADDR = 4'd9,
         BP_WR_DATA = 4'd10,
-        BP_WR_RESP = 4'd11
+        BP_WR_RESP = 4'd11,
+        FLUSH_NEXT = 4'd12,   // flush-all: tag read of the next line
+        FLUSH_DONE = 4'd13    // flush-all finished
     } state_e;
 
     state_e state_r, next_s;
@@ -96,6 +103,9 @@ module dcache #(
     logic [31:0]         capture_data_r; // refill / bypass word served in SERVE
     logic                is_flush_r;     // this transaction is a cache flush
     logic [5:0]          flush_line_r;   // flush target line index (from wdata)
+    logic                flush_all_r;    // walking all lines (FENCE.I)
+    logic                err_r;          // AXI error (rresp/bresp != OKAY) on this access
+    wire                 rresp_err_w = m_axi_rvalid && (m_axi_rresp != 2'b00);
 
     // A flush carries FLUSH_CTRL_ADDR (outside the cacheable range) in
     // req_addr_r but writes back a cached line: it must never take the
@@ -180,6 +190,8 @@ module dcache #(
             capture_data_r <= '0;
             is_flush_r     <= 1'b0;
             flush_line_r   <= 6'd0;
+            flush_all_r    <= 1'b0;
+            err_r          <= 1'b0;
         end else begin
             state_r <= next_s;
 
@@ -190,7 +202,25 @@ module dcache #(
                 req_wdata_r  <= core_bus.wdata;
                 is_flush_r   <= incoming_flush_w;
                 flush_line_r <= core_bus.wdata[11:6];
+                err_r        <= 1'b0;
+            end else if (state_r == IDLE && flush_all_req_i) begin
+                // flush-all = the single-line flush, repeated for lines 0..63
+                req_addr_r   <= FLUSH_CTRL_ADDR;
+                req_we_r     <= 1'b1;
+                is_flush_r   <= 1'b1;
+                flush_all_r  <= 1'b1;
+                flush_line_r <= 6'd0;
+            end else if (next_s == FLUSH_NEXT) begin
+                flush_line_r <= flush_line_r + 6'd1;
             end
+            if (state_r == FLUSH_DONE) begin
+                is_flush_r  <= 1'b0;
+                flush_all_r <= 1'b0;
+            end
+
+            if ((state_r == REFILL && rresp_err_w) ||
+                (state_r == BP_WR_RESP && m_axi_bvalid && m_axi_bresp != 2'b00))
+                err_r <= 1'b1;
 
             if (state_r == LOOKUP && !tag_hit_w)
                 evict_tag_r <= stored_tag_w;
@@ -218,6 +248,8 @@ module dcache #(
         core_bus.gnt    = 1'b0;
         core_bus.rvalid = 1'b0;
         core_bus.rdata  = capture_data_r;
+        core_bus.err    = 1'b0;
+        flush_all_done_o = 1'b0;
 
         ram_wr_en     = 1'b0;
         ram_wstrb     = 4'b1111;
@@ -248,6 +280,15 @@ module dcache #(
             IDLE: begin
                 if (core_bus.req)
                     next_s = LOOKUP;
+                else if (flush_all_req_i)
+                    next_s = FLUSH_NEXT;
+            end
+
+            FLUSH_NEXT: next_s = LOOKUP;
+
+            FLUSH_DONE: begin
+                flush_all_done_o = 1'b1;
+                next_s           = IDLE;
             end
 
             LOOKUP: begin
@@ -258,7 +299,8 @@ module dcache #(
                         tag_wr_en    = 1'b1;
                         valid_bit_in = 1'b0;
                         dirty_bit_in = 1'b0;
-                        next_s       = SERVE;
+                        next_s       = !flush_all_r          ? SERVE      :
+                                       (flush_line_r == 6'd63) ? FLUSH_DONE : FLUSH_NEXT;
                     end
 
                 end else if (is_bypass_w) begin
@@ -306,7 +348,8 @@ module dcache #(
                         tag_wr_en    = 1'b1;
                         valid_bit_in = 1'b0;
                         dirty_bit_in = 1'b0;
-                        next_s       = SERVE;
+                        next_s       = !flush_all_r          ? SERVE      :
+                                       (flush_line_r == 6'd63) ? FLUSH_DONE : FLUSH_NEXT;
                     end else begin
                         next_s = FETCH_ADDR;
                     end
@@ -327,11 +370,12 @@ module dcache #(
 
                     if (m_axi_rlast) begin
                         if (!is_bypass_w) begin
+                            // a refill that saw an AXI error is not cached
                             tag_wr_en    = 1'b1;
-                            valid_bit_in = 1'b1;
+                            valid_bit_in = !(err_r || rresp_err_w);
                             dirty_bit_in = 1'b0;
                         end
-                        next_s = req_we_r ? COMMIT : SERVE;
+                        next_s = (req_we_r && !(err_r || rresp_err_w)) ? COMMIT : SERVE;
                     end
                 end
             end
@@ -350,6 +394,7 @@ module dcache #(
                 core_bus.gnt    = 1'b1;
                 core_bus.rvalid = 1'b1;
                 core_bus.rdata  = capture_data_r;
+                core_bus.err    = err_r;   // load/store access fault
                 next_s        = IDLE;
             end
 

@@ -15,6 +15,7 @@ module icache_tag_ram #(
     input   wire valid_icache_in,  //unused for now here for cache coherency
     
     input wire wr_i, // make a good fsm for this or it will not accept new data
+    input wire inv_all_i,  // clear every valid bit (FENCE.I), wins over wr_i
 
     // Out
     output wire [DATA_WIDTH - 1:0]  tag_o
@@ -43,7 +44,13 @@ module icache_tag_ram #(
     if (rst_i) begin
         valid_ram <= {TAG_COUNT{1'b0}};
         ram_read_q <= {DATA_WIDTH{1'b0}};
-    end  
+    end
+        else if (inv_all_i) begin
+        valid_ram  <= {TAG_COUNT{1'b0}};
+        ram_read_q <= {DATA_WIDTH{1'b0}};
+        if (wr_i)
+            tag_ram[line_index] <= {dirty_icache_in,1'b0 ,ins_addr_i[ADDR_WIDTH-1:12]};
+    end
         else if (wr_i) begin
         valid_ram[line_index] <= valid_icache_in;
         tag_ram[line_index]   <= {dirty_icache_in,1'b0 ,ins_addr_i[ADDR_WIDTH-1:12]};

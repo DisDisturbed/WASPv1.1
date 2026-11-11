@@ -26,6 +26,7 @@ module ID_stage
     input wire [DATA_WIDTH-1:0] if_id_instr_i,
     input wire [DATA_WIDTH-1:0] if_id_pc_i,
     input wire                  if_id_valid_i,      // 0 = IF bubble (NOP)
+    input wire                  if_id_err_i,        // fetch refused by the I-cache (access fault)
 
     input wire                     wb_id_rf_wen_i,
     input wire [RF_ADDR_WIDTH-1:0] wb_id_rf_waddr_i,
@@ -67,6 +68,7 @@ module ID_stage
     wb_sel_e     wb_ctrl_w;
     logic        csr_access_w;
     logic        mret_w;
+    logic        fencei_w;
     logic        ecall_w, ebreak_w, illegal_instr_w;
 
     control_unit ctrl_inst (
@@ -96,6 +98,7 @@ module ID_stage
         .wb_ctrl_o       (wb_ctrl_w),
         .csr_access_o    (csr_access_w),
         .mret_o          (mret_w),
+        .fencei_o        (fencei_w),
         .ecall_o         (ecall_w),
         .ebreak_o        (ebreak_w),
         .illegal_instr_o (illegal_instr_w)
@@ -133,6 +136,15 @@ module ID_stage
 
     logic csr_use_imm_w;
     assign csr_use_imm_w = csr_access_w && if_id_instr_i[14];
+
+    // Source registers the instruction really reads. The rs1/rs2 fields of
+    // U/J/I-type and CSRxI encodings are immediate bits; passing them on
+    // let hazard_unit forward a register value into e.g. LUI/AUIPC
+    // (lui sp,0xf0f0f has rs1 field = x1 -> ra got added to the result).
+    // An unused source is handed to EX as x0, which never forwards.
+    logic uses_rs1_w, uses_rs2_w;
+    assign uses_rs1_w = (rs1_src_w == 2'b00) && !csr_use_imm_w;
+    assign uses_rs2_w = is_store_w || is_branch_w || (if_id_instr_i[6:0] == 7'b011_0011);
 
     logic [DATA_WIDTH-1:0] csr_wdata_operand_w;
     assign csr_wdata_operand_w = csr_use_imm_w ? csr_wdata_w : rs1_muxed_val_w;
@@ -181,6 +193,10 @@ module ID_stage
             // mstatus.MIE=1 AND mie.MTIE=1 AND !trap_in_flight
             generated_trap_w       = 1'b1;
             generated_trap_cause_w = TRAP_CAUSE_TIMER_INTERRUPT_M;
+        end else if (if_id_err_i && if_id_valid_i) begin
+            // fetch outside IMEM/DMEM: the word is not an instruction
+            generated_trap_w       = 1'b1;
+            generated_trap_cause_w = TRAP_CAUSE_INSTR_ACCESS_FAULT;
         end else if (illegal_instr_w) begin
             generated_trap_w       = 1'b1;
             generated_trap_cause_w = TRAP_CAUSE_ILLEGAL_INSTRUCTION;
@@ -229,6 +245,9 @@ module ID_stage
             id_ex_o.trap       <= 1'b1;
             id_ex_o.trap_cause <= generated_trap_cause_w;
             id_ex_o.pc         <= if_id_pc_i;
+            id_ex_o.tval       <= (generated_trap_cause_w == TRAP_CAUSE_ILLEGAL_INSTRUCTION) ? if_id_instr_i :
+                                  (generated_trap_cause_w == TRAP_CAUSE_BREAKPOINT ||
+                                   generated_trap_cause_w == TRAP_CAUSE_INSTR_ACCESS_FAULT)  ? if_id_pc_i    : '0;
 
         end else if (flush_i) begin
 
@@ -240,12 +259,13 @@ module ID_stage
             id_ex_o.rs2_data    <= rf_read2_data_w;
             id_ex_o.imm         <= imm_extended_w;
             id_ex_o.rd_addr     <= rd_addr_w;
-            id_ex_o.rs1_addr    <= rs1_addr_w;
-            id_ex_o.rs2_addr    <= rs2_addr_w;
+            id_ex_o.rs1_addr    <= uses_rs1_w ? rs1_addr_w : '0;
+            id_ex_o.rs2_addr    <= uses_rs2_w ? rs2_addr_w : '0;
             id_ex_o.csr_rdata   <= csr_rdata_i;
 
             id_ex_o.trap        <= 1'b0;
             id_ex_o.trap_cause  <= 6'b0;
+            id_ex_o.tval        <= '0;
 
             id_ex_o.reg_write   <= reg_write_con_w;
             id_ex_o.alu_src     <= alu_src_w;
@@ -267,6 +287,7 @@ module ID_stage
             id_ex_o.csr_wdata   <= csr_wdata_operand_w;
             id_ex_o.csr_use_imm <= csr_use_imm_w;
             id_ex_o.mret        <= mret_w;
+            id_ex_o.fencei      <= fencei_w;
             id_ex_o.priv_mode   <= PRIV_M;  // core is M-mode only today
             id_ex_o.valid       <= if_id_valid_i;
         end

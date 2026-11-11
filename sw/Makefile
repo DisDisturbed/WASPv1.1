@@ -26,7 +26,7 @@
 #   apps/<prog>/main.c   application (shared by both targets)
 #   lib/sphincs/         NIST round-3 SPHINCS+ reference, verbatim (+ params/<set>/)
 #   rng/                 randombytes(): randombytes_hw.c / randombytes_det.c
-#   hal/include/         driver APIs + register maps (uart, clint, irq, cache, memmap)
+#   hal/include/         driver APIs + register maps (uart, clint, irq, trap, cache, memmap)
 #   hal/common/          target-independent driver code (uart_util.c)
 #   hal/wasp/            RISC-V: crt0, linker script, csr.h, drivers, libc_min
 #   hal/host/            PC stand-ins: csr.h (counters = 0), stdin/stdout UART, stubs
@@ -101,7 +101,7 @@ SPIKE   ?= spike
 ARCH := $(shell echo | $(CC) -march=rv32im_zicsr -mabi=ilp32 -E -x c - >/dev/null 2>&1 && echo rv32im_zicsr || echo rv32im)
 
 DRIVERS  = hal/wasp/crt0.s hal/wasp/uart.c hal/wasp/irq.c hal/wasp/clint.c \
-           hal/wasp/libc_min.c hal/common/uart_util.c
+           hal/wasp/trap.c hal/wasp/libc_min.c hal/common/uart_util.c hal/common/trap_util.c
 
 CCFLAGS = -march=$(ARCH) -mabi=ilp32 -mcmodel=medany \
           $(OPT) -Ihal/wasp $(INC) \
@@ -142,7 +142,7 @@ endif
 ifeq ($(TARGET),host)
 HOST_CC ?= gcc
 DRIVERS  = hal/host/uart_host.c hal/host/irq_host.c hal/host/clint_host.c \
-           hal/common/uart_util.c
+           hal/host/trap_host.c hal/common/uart_util.c hal/common/trap_util.c
 CCFLAGS  = $(OPT) -Ihal/host $(INC) -g -Wall -Wextra \
            -DWASP_HOST=1 -DCPU_CLK_HZ=$(CPU_CLK_HZ)u
 

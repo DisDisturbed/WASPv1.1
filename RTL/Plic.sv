@@ -51,6 +51,7 @@ module plic
 
     // Bus interface registers
     assign bus.gnt = bus.req;
+    assign bus.err = 1'b0;   // never fails (unknown offsets read 0)
 
     logic                  req_r_ff;
     logic [DATA_WIDTH-1:0] addr_r;

@@ -50,6 +50,12 @@ module Core_Top
     // data_rdata_i)
     obi_data_if.master  data_bus,
 
+    // FENCE.I cache maintenance (Zifencei): fencei_req_o is held while a
+    // FENCE.I is in MEM; the cache system writes back the D-cache,
+    // invalidates the I-cache and pulses fencei_done_i for one cycle.
+    output logic fencei_req_o,
+    input  wire  fencei_done_i,
+
     output logic csr_mie_reg_o
 );
    // simple clk_wiz instantation for generating reset and clk signals
@@ -102,6 +108,7 @@ module Core_Top
     // commiting logic for csr it is not tested
     logic                  wb_commit_trap;
     logic [5:0]            wb_commit_trap_cause;
+    logic [DATA_WIDTH-1:0] wb_commit_trap_tval;
     logic [11:0]           wb_commit_csr_addr;
     csr_op_e               wb_commit_csr_op;
     logic [DATA_WIDTH-1:0] wb_commit_csr_wdata;
@@ -159,6 +166,7 @@ module Core_Top
     logic [DATA_WIDTH-1:0] if_id_instr;
     logic [DATA_WIDTH-1:0] if_id_pc;
     logic                  if_id_valid;
+    logic                  if_id_err;
     logic [DATA_WIDTH-1:0] pc_if;
     logic                  csr_mtvec_init;
 
@@ -172,6 +180,13 @@ module Core_Top
     logic id_csr_read_w, id_kill, id_trap_req;
     assign id_csr_read_w = (if_id_instr[6:0] == 7'b111_0011) &&
                            ((if_id_instr[14:12] != 3'b000) || (if_id_instr == 32'h3020_0073));
+
+    // CSR access to minstret/minstreth/instret/instreth (precise read)
+    logic id_cnt_read_w;
+    assign id_cnt_read_w = (if_id_instr[6:0] == 7'b111_0011) && (if_id_instr[13:12] != 2'b00) &&
+                           (if_id_instr[31:20] inside {CSR_ADDR_MINSTRET, CSR_ADDR_MINSTRETH,
+                                                       CSR_ADDR_INSTRET,  CSR_ADDR_INSTRETH});
+    logic mem_exc;
 
     // pipeline-register bundles: these replace the ~26/~24/~18 individually
     // named id_ex_*/ex_mem_*/mem_wb_* wires the pre-conversion Core_Top had.
@@ -197,6 +212,7 @@ module Core_Top
         .csr_wdata_i        (wb_commit_csr_wdata),
         .trap_i             (wb_commit_trap),
         .trap_cause_i       (wb_commit_trap_cause),
+        .trap_tval_i        (wb_commit_trap_tval),
         .trap_pc_i          (mem_wb_bus.pc),
         .mret_i             (wb_commit_mret),
         .instr_retire_i     (wb_commit_retire),
@@ -226,6 +242,7 @@ module Core_Top
         .id_is_branch_i           (id_is_branch_w),
         .id_jalr_i                (id_jalr_w),
         .id_csr_read_i            (id_csr_read_w),
+        .id_cnt_read_i            (id_cnt_read_w),
         .id_trap_req_i            (id_trap_req),
         .id_ex_i                  (id_ex_bus),
         .ex_mem_i                 (ex_mem_bus),
@@ -236,6 +253,7 @@ module Core_Top
         .if_busy_i                (if_busy),
         .trap_take_i              (trap_take),
         .mret_take_i              (mret_take),
+        .mem_exc_i                (mem_exc),
         .forward_a_sel_o          (forward_a_sel),
         .forward_b_sel_o          (forward_b_sel),
         .pc_set_o                 (pc_set),
@@ -282,6 +300,7 @@ module Core_Top
         .csr_mtvec_init_o   (csr_mtvec_init),
         .instr_rdata_id_o   (if_id_instr),
         .instr_valid_id_o   (if_id_valid),
+        .instr_err_id_o     (if_id_err),
         .pc_if_o            (pc_if),
         .pc_id_o            (if_id_pc)
     );
@@ -304,6 +323,7 @@ module Core_Top
         .if_id_instr_i      (if_id_instr),
         .if_id_pc_i         (if_id_pc),
         .if_id_valid_i      (if_id_valid),
+        .if_id_err_i        (if_id_err),
         .wb_id_rf_wen_i     (wb_rf_wen),
         .wb_id_rf_waddr_i   (wb_rf_waddr),
         .wb_id_rf_wdata_i   (wb_rf_wdata),
@@ -363,6 +383,9 @@ module Core_Top
         .lsu_ready_ex_o         (lsu_ready_ex),
         .lsu_ready_commit_o     (lsu_ready_commit),
         .mem_forward_data_o     (mem_forward_data),
+        .mem_exc_o              (mem_exc),
+        .fencei_req_o           (fencei_req_o),
+        .fencei_done_i          (fencei_done_i),
         .mem_wb_o               (mem_wb_bus),
         .mem_jump_target_o      (jump_target_mem)
     );
@@ -382,6 +405,7 @@ module Core_Top
         .wb_forward_data_o   (wb_forward_data),
         .wb_trap_o           (wb_commit_trap),
         .wb_trap_cause_o     (wb_commit_trap_cause),
+        .wb_trap_tval_o      (wb_commit_trap_tval),
         .wb_csr_addr_o       (wb_commit_csr_addr),
         .wb_csr_op_o         (wb_commit_csr_op),
         .wb_csr_wdata_o      (wb_commit_csr_wdata),
@@ -405,7 +429,9 @@ module Core_Top
 
     always_ff @(posedge clk) begin
         if (rst_n) begin
-            if (wb_rf_wen && wb_rf_waddr != 0)
+            // wb_commit_retire: while MEM stalls, WB keeps re-asserting the
+            // same register write (to keep forwarding alive) -- log it once
+            if (wb_rf_wen && wb_rf_waddr != 0 && wb_commit_retire)
                 $fdisplay(trace_fd, "[COMMIT] PC:%h x%0d<-%h",
                           mem_wb_bus.pc, wb_rf_waddr, wb_rf_wdata);
             if (data_bus.req && data_bus.gnt && data_bus.we)

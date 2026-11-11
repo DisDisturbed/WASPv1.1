@@ -72,6 +72,7 @@ module clint #(
 
     // ---- bus address phase capture (identical scheme to plic) -----------
     assign bus.gnt = bus.req;
+    assign bus.err = 1'b0;   // never fails (unknown offsets read 0)
 
     logic                  req_r;
     logic [11:0]           off_r;

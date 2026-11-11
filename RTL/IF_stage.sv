@@ -59,6 +59,7 @@ module IF_stage
     // if/id pipeline
     output logic [DATA_WIDTH-1:0] instr_rdata_id_o,
     output logic                  instr_valid_id_o,   // 0 = NOP bubble inserted by IF (for minstret)
+    output logic                  instr_err_id_o,     // fetch refused (instruction access fault)
     output logic [DATA_WIDTH-1:0] pc_if_o,
     output logic [DATA_WIDTH-1:0] pc_id_o,
     output logic                  if_busy_o
@@ -112,6 +113,7 @@ module IF_stage
     logic pending_q;     // obi signals
     logic fetch_valid_r;
     logic [DATA_WIDTH-1:0] fetch_buffer_r;
+    logic fetch_err_r;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -125,6 +127,7 @@ module IF_stage
 
             if (instr_bus.rvalid && stall_i) begin
                 fetch_buffer_r <= instr_bus.rdata;
+                fetch_err_r    <= instr_bus.err;
                 fetch_valid_r  <= 1'b1;
             end else if (!stall_i) begin
                 fetch_valid_r  <= 1'b0;
@@ -135,8 +138,10 @@ module IF_stage
     // ins source mux skid buffer takes priority
     logic        current_valid_w;
     logic [31:0] current_instr_w;
+    logic        current_err_w;
     assign current_valid_w = instr_bus.rvalid | fetch_valid_r;
     assign current_instr_w = fetch_valid_r  ? fetch_buffer_r : instr_bus.rdata;
+    assign current_err_w   = fetch_valid_r  ? fetch_err_r    : instr_bus.err;
 
     assign instr_bus.req  = pc_set_i | (~pending_q & ~fetch_valid_r & ~flush_i);
     assign instr_bus.addr = pc_set_i ? branch_addr_w : pc_r;
@@ -167,6 +172,7 @@ module IF_stage
         if (!rst_n) begin
             instr_rdata_id_o <= 32'h00000013; // NOP
             instr_valid_id_o <= 1'b0;
+            instr_err_id_o   <= 1'b0;
             pc_id_o          <= '0;
         end else if (flush_i || pc_set_i) begin
             // redirect of flush
@@ -175,6 +181,7 @@ module IF_stage
             // target, not pc_r (= old, wrong-path fetch address).
             instr_rdata_id_o <= 32'h00000013;
             instr_valid_id_o <= 1'b0;
+            instr_err_id_o   <= 1'b0;
             pc_id_o          <= pc_set_i ? branch_addr_w : pc_r;
         end else if (stall_i) begin
             //stalled input hold on skip buffer
@@ -182,11 +189,13 @@ module IF_stage
             // cache valid
             instr_rdata_id_o <= current_instr_w;
             instr_valid_id_o <= 1'b1;
+            instr_err_id_o   <= current_err_w;
             pc_id_o          <= pc_r;
         end else begin
             //pipeline bubble on cahce miss
             instr_rdata_id_o <= 32'h00000013;
             instr_valid_id_o <= 1'b0;
+            instr_err_id_o   <= 1'b0;
             pc_id_o          <= pc_r;
         end
     end

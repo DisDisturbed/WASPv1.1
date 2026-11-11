@@ -23,6 +23,7 @@ module WB_stage
     output logic [DATA_WIDTH-1:0]    wb_forward_data_o,
     output logic                     wb_trap_o,
     output logic [5:0]               wb_trap_cause_o,
+    output logic [DATA_WIDTH-1:0]    wb_trap_tval_o,
     output logic [11:0]              wb_csr_addr_o,
     output csr_op_e                  wb_csr_op_o,
     output logic [DATA_WIDTH-1:0]    wb_csr_wdata_o,
@@ -47,6 +48,7 @@ module WB_stage
     assign wb_mret_o       = mem_wb_i.mret       && !flush_i;
     assign wb_csr_we_o     = mem_wb_i.csr_we     && !flush_i;
     assign wb_trap_cause_o = mem_wb_i.trap_cause;
+    assign wb_trap_tval_o  = mem_wb_i.tval;
     assign wb_csr_addr_o   = mem_wb_i.csr_addr;
     assign wb_csr_op_o     = mem_wb_i.csr_op;
     assign wb_csr_wdata_o  = mem_wb_i.csr_wdata;

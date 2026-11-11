@@ -19,6 +19,9 @@
 #   make spike   build + same ELF on Spike (ISA reference, wasp peripherals via plugin)
 #   make view    open sim/active_test/wave.fst in Surfer (VIEWER=gtkwave for GTKWave)
 #   make test    regression (AES, PLIC IRQ, counters; Verilator == PC); test-spx adds SPHINCS+
+#   make riscv-tests  ISA compliance: upstream riscv-tests (rv32ui/um/mi) on Verilator, each
+#                checked against Spike instruction by instruction (docs/riscv_tests.md;
+#                one test: make -C sim/riscv-tests T=rv32ui-add ; first diff: ... compare T=...)
 #   make clean   remove firmware builds, Verilator models, active_test outputs
 #
 # Leave PROG out of wave/run/spike to simulate whatever is already in sim/active_test/.
@@ -95,9 +98,18 @@ test:
 	sim/regress.sh
 test-spx:
 	sim/regress.sh spx
+riscv-tests:
+	$(MAKE) -C sim/riscv-tests -j$(or $(JOBS),$(shell nproc 2>/dev/null || echo 4)) run
+# riscv-dv random tests vs Spike (sim/riscv-dv, needs `make -C sim/riscv-dv setup` once)
+riscv-dv:
+	$(MAKE) -C sim/riscv-dv -j$(or $(JOBS),6) run
+# coverage matrix of both flows -> docs/coverage_matrix.md (run them first)
+coverage:
+	python3 sim/coverage/coverage.py
 
 clean:
 	$(MAKE) -C sw clean
 	$(MAKE) -C sim clean clean-active
+	$(MAKE) -C sim/riscv-tests clean
 
-.PHONY: all build wave run spike view test test-spx clean
+.PHONY: all build wave run spike view test test-spx riscv-tests riscv-dv coverage clean

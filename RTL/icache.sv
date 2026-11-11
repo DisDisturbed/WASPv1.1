@@ -10,7 +10,14 @@
 module icache #(
     parameter int ADDR_WIDTH = 32,
     parameter int TAG_BITS   = ADDR_WIDTH - 12,
-    parameter int LINE_SIZE  = 16              // words per cache line
+    parameter int LINE_SIZE  = 16,             // words per cache line
+    // Executable regions (instruction access fault outside them). Fetches
+    // anywhere else are answered with err and never reach AXI, where a
+    // decode error would wedge the crossbar.
+    parameter logic [31:0] EXEC0_BASE       = 32'h4000_0000,  // IMEM
+    parameter int          EXEC0_ADDR_WIDTH = 16,
+    parameter logic [31:0] EXEC1_BASE       = 32'h8000_0000,  // DMEM (code loaded / generated at run time)
+    parameter int          EXEC1_ADDR_WIDTH = 16
 )(
     input  wire        clk,
     input  wire        rst,
@@ -18,7 +25,8 @@ module icache #(
     // OBI instruction-memory slave port
     obi_instr_if.slave instr_bus,
 
-    input  wire        flush_i,
+    input  wire        flush_i,       // drop the in-flight request
+    input  wire        invalidate_i,  // FENCE.I: invalidate every line (1 cycle)
 
     output logic       m_axi_arvalid,
     input  wire        m_axi_arready,
@@ -44,7 +52,11 @@ module icache #(
     logic [3:0]  refill_cnt_r;
     logic [31:0] bypass_data_r;
     logic        suppress_r;
+    logic        inv_pending_r;   // invalidate arrived during a refill: do not validate that line
     wire redirect_w = instr_bus.req && (instr_bus.addr != req_addr_r);
+
+    wire exec_ok_w = ((req_addr_r >> EXEC0_ADDR_WIDTH) == (EXEC0_BASE >> EXEC0_ADDR_WIDTH)) ||
+                     ((req_addr_r >> EXEC1_ADDR_WIDTH) == (EXEC1_BASE >> EXEC1_ADDR_WIDTH));
 
     always_ff @(posedge clk) begin
         if (rst) begin
@@ -53,8 +65,14 @@ module icache #(
             refill_cnt_r  <= 4'd0;
             bypass_data_r <= '0;
             suppress_r    <= 1'b0;
+            inv_pending_r <= 1'b0;
         end else begin
             state_r <= next_s;
+
+            if (invalidate_i && state_r != S_IDLE)
+                inv_pending_r <= 1'b1;
+            else if (state_r == S_IDLE)
+                inv_pending_r <= 1'b0;
 
             if (state_r == S_IDLE && instr_bus.req && !flush_i)
                 req_addr_r <= instr_bus.addr;
@@ -103,6 +121,7 @@ module icache #(
         instr_bus.gnt    = 1'b0;
         instr_bus.rvalid = 1'b0;
         instr_bus.rdata  = bypass_data_r;
+        instr_bus.err    = 1'b0;
         tag_wr_en      = 1'b0;
         tag_valid_in   = 1'b0;
         data_wr_en     = 1'b0;
@@ -117,6 +136,15 @@ module icache #(
 
             S_LOOKUP: begin
                 if (flush_i || redirect_w) begin
+                    next_s = S_IDLE;
+                end else if (!exec_ok_w) begin
+                    // instruction access fault: answer with err + a NOP word
+                    if (!suppress_r) begin
+                        instr_bus.gnt    = 1'b1;
+                        instr_bus.rvalid = 1'b1;
+                        instr_bus.err    = 1'b1;
+                        instr_bus.rdata  = 32'h0000_0013;
+                    end
                     next_s = S_IDLE;
                 end else if (tag_hit_w) begin
                     if (!suppress_r) begin
@@ -141,7 +169,9 @@ module icache #(
                     data_wr_en = 1'b1;
                     if (refill_cnt_r == LINE_SIZE - 1) begin
                         tag_wr_en    = 1'b1;
-                        tag_valid_in = 1'b1;
+                        // a FENCE.I during this refill: the data may predate
+                        // the D-cache write-back, keep the line invalid
+                        tag_valid_in = !(inv_pending_r || invalidate_i);
                         next_s       = S_SERVE;
                     end
                 end
@@ -186,6 +216,7 @@ module icache #(
         .dirty_icache_in(1'b0),
         .valid_icache_in(tag_valid_in),
         .wr_i           (tag_wr_en),
+        .inv_all_i      (invalidate_i),
         .tag_o          (tag_ram_out)
     );
 

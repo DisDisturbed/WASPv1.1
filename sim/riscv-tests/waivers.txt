@@ -1,0 +1,6 @@
+# Tests that cannot pass on WASP by design (spec-permitted choices), not bugs.
+# Format: <test> <reason>.   See docs/riscv_tests.md, "Waived tests".
+# A waived test is still built and run; the summary shows WAIVED instead of FAIL
+# (and "PASS (waived)" if it ever starts passing, so the waiver can be dropped).
+rv32ui-ma_data  misaligned load/store are trapped, not done in hardware (allowed by the ISA; Spike traps too)
+rv32mi-pmpaddr  no PMP implemented: pmpaddr0 reads 0 (PMP is optional)

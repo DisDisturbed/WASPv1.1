@@ -1,6 +1,6 @@
 # WASP
 
-RV32IM (+ Zicsr, Zicntr) RISC-V SoC: 5-stage core, I-/D-cache, AXI crossbar,
+RV32IM (+ Zicsr, Zicntr, Zifencei) RISC-V SoC: 5-stage core, I-/D-cache, AXI crossbar,
 UART16550, CLINT, PLIC. The same C programs run on three platforms and give
 the same output:
 
@@ -31,9 +31,9 @@ WASP/
 │   ├── apps/           aes/  sphincs/  counters/     (main.c each)
 │   ├── lib/sphincs/    NIST SPHINCS+ reference code, verbatim (+ params/128f|128s)
 │   ├── rng/            randombytes_det.c (fixed seed)  randombytes_hw.c (mcycle)
-│   ├── hal/include/    driver APIs + register maps: memmap.h uart.h clint.h irq.h cache.h
-│   ├── hal/common/     target-independent driver code (uart_util.c)
-│   ├── hal/wasp/       RISC-V only: crt0.s, linksc.ld, csr.h, uart.c, clint.c, irq.c, libc_min.c
+│   ├── hal/include/    driver APIs + register maps: memmap.h uart.h clint.h irq.h trap.h cache.h
+│   ├── hal/common/     target-independent driver code (uart_util.c, trap_util.c)
+│   ├── hal/wasp/       RISC-V only: crt0.s, linksc.ld, csr.h, uart.c, clint.c, irq.c, trap.c, libc_min.c
 │   ├── hal/host/       PC stand-ins: csr.h (counters = 0), UART on stdin/stdout, stubs
 │   ├── tools/          sphincs_host.py: talk to the real board over a serial port
 │   └── build/          (generated) build/<wasp|host>/<prog>/
@@ -43,6 +43,9 @@ WASP/
 │   ├── axi_uart16550_0.sv   UART model (files instead of serial pins; sim only!)
 │   ├── run.sh, regress.sh   single run / regression
 │   ├── spike/          Spike plugin with the wasp peripherals
+│   ├── riscv-tests/    ISA compliance: upstream riscv-tests + WASP env, RTL vs Spike lock-step
+│   ├── riscv-dv/       random instruction tests (riscv-dv) vs Spike, same testbench
+│   ├── coverage/       coverage.py: functional coverage matrix of both flows
 │   ├── host/           PC-side tools: rxgen.py, uart_cmp.py, spx_lite.py, spx_kat.c,
 │   │                   NIST KAT files (nist/), test vectors (vectors/)
 │   └── active_test/    (generated) where every `make run/wave` happens
@@ -187,7 +190,7 @@ What each test checks:
 |---|---|---|
 | AES | 16 B vector + 1 KB fresh random data | Verilator output == PC build output, all 1040 bytes |
 | PLIC IRQ | button IRQ at cycle 20 000, no UART input | trap handler's 16 bytes == PC build encrypting DEADBEEF×4 |
-| counters | – | firmware self-test prints `ALL PASS` (CSRs, CLINT timer/soft IRQ, PLIC regs, IMEM data reads, D-cache flush, IRQ stress) |
+| counters | – | firmware self-test prints `ALL PASS` (CSRs, CLINT timer/soft IRQ, PLIC regs, IMEM data reads, D-cache flush, IRQ stress, access faults via trap.h, FENCE.I with generated code, x/0) |
 | SPHINCS+ lite | info, Keccak bench, NIST KAT #0 verify, bit-flipped signature | decoded by `spx_lite.py` (SHAKE256 vs Python `hashlib`, KAT verifies, flipped one rejected) **and** Verilator == PC build (cycle fields skipped) |
 
 Expected last line: `REGRESSION PASS`. Reference numbers (128f, 50 MHz):
@@ -238,6 +241,32 @@ For long programs dump only a window: `make wave PROG=sphincs SPX=128f RX=rx.txt
 WAVE_START=1000000 MAX_CYCLES=1200000`. A full SPHINCS+ run would be tens of GB.
 `sim/active_test/cpu_trace.log` lists every committed instruction;
 `make spike PROG=...` gives the reference trace (`spike_trace.log`) to diff against.
+
+### 6.5 ISA compliance: riscv-tests
+
+```sh
+make riscv-tests                              # rv32ui / rv32um / rv32mi + WASP directed tests, ~15 s
+make -C sim/riscv-tests T=rv32ui-add          # one test
+make -C sim/riscv-tests compare T=rv32ui-add  # first instruction where RTL and Spike differ
+```
+The unmodified upstream tests run on the Verilator model with a WASP
+environment (`sim/riscv-tests/env/wasp/`: code in IMEM, `tohost` = first word
+of DMEM). A test passes only if it reports pass via `tohost` **and** every
+register write matches Spike running the same ELF. Expected last line:
+`RISCV-TESTS PASS` (70 tests, 2 waived by design). Results, waivers and the
+bugs this found: `docs/riscv_tests.md`.
+
+### 6.6 Random tests (riscv-dv) and coverage matrix
+
+```sh
+make -C sim/riscv-dv setup   # once: riscv-dv, UVM, Verilator fork, z3
+make riscv-dv                # 9 configs x 5 seeds, RTL vs Spike lock-step
+make coverage                # after both flows -> docs/coverage_matrix.md
+```
+Expected: `45 tests: 45 PASS`. Details: `docs/riscv_dv.md`. The coverage matrix
+lists, per suite / config, how often each instruction, branch outcome, memory
+access size/alignment, forwarding distance, CSR, trap cause and interrupt was
+exercised by passing tests, and flags rows nothing exercises.
 
 ---
 
@@ -363,6 +392,12 @@ sim/regress.sh                     make test / test-spx: builds both targets, ru
 | `0xC000_1000` | 4 KB | CLINT (compact layout) |
 | `0xC000_2000` | 4 KB | PLIC (compact layout) |
 | `0xC000_3000` | 4 KB | D-cache flush register |
+
+Everything else, a store to IMEM, a read of the flush register or an access to
+an empty spare slot is a precise access fault (mcause 5/7, mtval = address);
+fetching outside IMEM/DMEM is an instruction access fault (1). Firmware can
+catch them with `sw/hal/include/trap.h`; code written to DMEM runs after
+`icache_sync()` (FENCE.I, `cache.h`).
 
 Details: `docs/memory_map.md`. Keep `RTL/System_top.sv`,
 `sw/hal/include/memmap.h` and `sw/hal/wasp/linksc.ld` in sync.

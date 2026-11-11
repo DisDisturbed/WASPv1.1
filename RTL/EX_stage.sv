@@ -125,10 +125,13 @@ module EX_stage
             end else if (alu_error_w) begin
                 generated_trap_w       = 1'b1;
                 generated_trap_cause_w = TRAP_CAUSE_ILLEGAL_INSTRUCTION;
-            end else if (div_by_zero) begin
-                generated_trap_w       = 1'b1;
-                generated_trap_cause_w = TRAP_CAUSE_DIV_BY_ZERO_CUSTOM;
             end
+            // Division by zero is NOT an exception in RISC-V (M extension:
+            // DIV/DIVU x/0 = all ones, REM/REMU x/0 = x; MulDiv already
+            // returns that). The old custom cause-7 trap also used the
+            // sticky div_by_zero_o without checking is_muldiv, so every
+            // instruction after an x/0 was "trapped" and lost its
+            // writeback until the next MUL/DIV started.
         end
     end
 
@@ -140,9 +143,6 @@ module EX_stage
                          $time, id_ex_i.pc, branch_target_w);
             else if (alu_error_w)
                 $display("[EX TRAP] Time: %0t | PC: %h | cause: illegal instruction",
-                         $time, id_ex_i.pc);
-            else if (div_by_zero)
-                $display("[EX TRAP] Time: %0t | PC: %h | cause: division by zero",
                          $time, id_ex_i.pc);
         end
     end
@@ -236,12 +236,20 @@ MulDiv #(.DATA_WIDTH(DATA_WIDTH)) muldiv_inst (
                 ex_mem_o.alu_error     <= alu_error_w;
                 ex_mem_o.alu_carry     <= alu_carry_w;
                 ex_mem_o.rs2_data      <= forward_mux_b_val;
-                ex_mem_o.branch_target <= branch_target_w;
+                // FENCE.I resumes fetching at the next instruction once the
+                // caches are synchronised (redirect from MEM, like a jump)
+                ex_mem_o.branch_target <= id_ex_i.fencei ? id_ex_i.pc + DATA_WIDTH'(4)
+                                                         : branch_target_w;
                 ex_mem_o.rd_addr       <= id_ex_i.rd_addr;
                 ex_mem_o.pc            <= id_ex_i.pc;
                 ex_mem_o.pc_plus4      <= id_ex_i.pc + DATA_WIDTH'(4);
                 ex_mem_o.trap          <= generated_trap_w;
                 ex_mem_o.trap_cause    <= generated_trap_cause_w;
+                // raised here, not in ID: no PC redirect has happened yet,
+                // MEM_stage requests it (see hazard_unit mem_exc_i)
+                ex_mem_o.trap_late     <= generated_trap_w && !id_ex_i.trap;
+                ex_mem_o.tval          <= id_ex_i.trap           ? id_ex_i.tval    :
+                                          inst_addr_misaligned_w ? branch_target_w : '0;
                 ex_mem_o.is_load       <= id_ex_i.is_load;
                 ex_mem_o.is_store      <= id_ex_i.is_store;
                 ex_mem_o.is_jump       <= id_ex_i.is_jump;
@@ -252,6 +260,7 @@ MulDiv #(.DATA_WIDTH(DATA_WIDTH)) muldiv_inst (
                 ex_mem_o.csr_access    <= id_ex_i.csr_access;
                 ex_mem_o.csr_we        <= id_ex_i.csr_we;
                 ex_mem_o.mret          <= id_ex_i.mret;
+                ex_mem_o.fencei        <= id_ex_i.fencei && !generated_trap_w;
                 ex_mem_o.priv_mode     <= id_ex_i.priv_mode;
                 ex_mem_o.valid         <= id_ex_i.valid && !generated_trap_w;
 

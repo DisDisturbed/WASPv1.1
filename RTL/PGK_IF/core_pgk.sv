@@ -224,21 +224,15 @@ package core_pkg;
     // ---- Exceptions (bit 5 = 0) ----
     localparam logic [5:0]
         TRAP_CAUSE_INSTR_ADDR_MISALIGNED = 6'd0,
+        TRAP_CAUSE_INSTR_ACCESS_FAULT    = 6'd1,   // fetch outside IMEM/DMEM (icache err)
         TRAP_CAUSE_ILLEGAL_INSTRUCTION   = 6'd2,   // existing: illegal_instr_w
         TRAP_CAUSE_BREAKPOINT            = 6'd3,   // existing: ebreak_w
         TRAP_CAUSE_LOAD_ADDR_MISALIGNED  = 6'd4,
+        TRAP_CAUSE_LOAD_ACCESS_FAULT     = 6'd5,   // data bus err on a load
         TRAP_CAUSE_STORE_ADDR_MISALIGNED = 6'd6,
-        TRAP_CAUSE_DIV_BY_ZERO_CUSTOM    = 6'd7,   // existing: EX_stage div_by_zero
-                                                     // NOTE: 6'd7 collides with
-                                                     // the standard timer-interrupt
-                                                     // *exception-space* slot is
-                                                     // fine (interrupt bit differs)
-                                                     // but is NOT a standard RISC-V
-                                                     // exception code -- this is a
-                                                     // custom cause your existing
-                                                     // RTL already uses; flagged
-                                                     // here rather than silently
-                                                     // carried forward unlabeled
+        TRAP_CAUSE_STORE_ACCESS_FAULT    = 6'd7,   // data bus err on a store
+        // (6'd7 used to be a custom divide-by-zero trap; division by zero
+        //  is not an exception in RISC-V, see docs/riscv_tests.md)
         TRAP_CAUSE_ECALL_FROM_U          = 6'd8,    // new: needed once U-mode exists
         TRAP_CAUSE_ECALL_FROM_S          = 6'd9,    // new: needed once S-mode exists
         TRAP_CAUSE_ECALL_FROM_M          = 6'd11;   // existing behavior, renamed
@@ -323,9 +317,11 @@ package core_pkg;
         logic [CORE_DATA_WIDTH-1:0]      csr_rdata;
         logic                            csr_we;
         logic                            mret;
+        logic                            fencei;        // FENCE.I (Zifencei)
 
         logic                            trap;
         logic [5:0]                      trap_cause;
+        logic [CORE_DATA_WIDTH-1:0]     tval;          // mtval value for this trap
 
         priv_mode_e                      priv_mode;     // NEW: unused until
                                                           // U/S-mode work lands
@@ -353,7 +349,9 @@ package core_pkg;
         logic                            is_jarl;
 
         logic                            trap;
+        logic                            trap_late;     // trap raised in EX (not yet redirected)
         logic [5:0]                      trap_cause;
+        logic [CORE_DATA_WIDTH-1:0]     tval;          // mtval value for this trap
 
         logic [11:0]                     csr_addr;
         csr_op_e                         csr_op;
@@ -361,6 +359,7 @@ package core_pkg;
         logic                            csr_access;
         logic                            csr_we;
         logic                            mret;
+        logic                            fencei;        // FENCE.I: cache maintenance in MEM
 
         priv_mode_e                      priv_mode;     // NEW
         logic                            valid;         // real, non-trapping instruction (minstret)
@@ -381,6 +380,7 @@ package core_pkg;
 
         logic                            trap;
         logic [5:0]                      trap_cause;
+        logic [CORE_DATA_WIDTH-1:0]     tval;          // mtval value for this trap
 
         logic [11:0]                     csr_addr;
         csr_op_e                         csr_op;

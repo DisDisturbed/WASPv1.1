@@ -34,15 +34,16 @@ interface obi_instr_if #(
     logic                  gnt;     // slave : request accepted this cycle
     logic                  rvalid;  // slave : rdata valid this cycle
     logic [DATA_WIDTH-1:0] rdata;   // slave : fetched instruction word
+    logic                  err;     // slave : with rvalid, fetch not allowed (instruction access fault)
 
     modport master (
         output req, addr,
-        input  gnt, rvalid, rdata
+        input  gnt, rvalid, rdata, err
     );
 
     modport slave (
         input  req, addr,
-        output gnt, rvalid, rdata
+        output gnt, rvalid, rdata, err
     );
 
 endinterface : obi_instr_if
@@ -60,15 +61,18 @@ interface obi_data_if #(
     logic                    gnt;    // slave : request accepted this cycle
     logic                    rvalid; // slave : rdata valid this cycle
     logic [DATA_WIDTH-1:0]   rdata;  // slave : load data
+    logic                    err;    // slave : with rvalid, access failed (load/store access fault).
+                                     //         A slave that can fail a WRITE must give rvalid+err
+                                     //         in its gnt cycle (the core retires stores at gnt).
 
     modport master (
         output req, addr, we, be, wdata,
-        input  gnt, rvalid, rdata
+        input  gnt, rvalid, rdata, err
     );
 
     modport slave (
         input  req, addr, we, be, wdata,
-        output gnt, rvalid, rdata
+        output gnt, rvalid, rdata, err
     );
 
 endinterface : obi_data_if

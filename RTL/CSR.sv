@@ -17,7 +17,8 @@
 //  0x340  mscratch
 //  0x341  mepc      [1:0] forced 0
 //  0x342  mcause    [31]=interrupt [4:0]=cause
-//  0x343  mtval     zeroed on trap entry
+//  0x343  mtval     on trap entry: misaligned address (fetch target /
+//                   load / store), illegal instruction bits, ebreak pc; else 0
 //  0x344  mip       read-only mirror of live IRQ lines: MSIP[3] MTIP[7] MEIP[11]
 //  0xB00/0xB80  mcycle / mcycleh       64-bit, +1 every clock (unless inhibited)
 //  0xB02/0xB82  minstret / minstreth   64-bit, +1 per retired instruction
@@ -37,8 +38,9 @@
 // addresses visible to other stages too, so they moved up a level -- the
 // M-mode values below are byte-for-byte the same as before).
 //
-// NOTE: unknown / read-only CSRs still read as 0 and ignore writes without
-// raising an illegal-instruction trap (same as before this change).
+// NOTE: accesses to non-existent CSRs and writes to read-only CSRs never
+// reach this module: control_unit (csr_legal) decodes them as illegal
+// instructions. Existing CSRs without state here read 0 / ignore writes.
 
 module csr_file
     import core_pkg::*;
@@ -64,6 +66,7 @@ module csr_file
     //  trap commit
     input  wire                   trap_i,
     input  wire [5:0]             trap_cause_i,    // is_interrupt[5], cause[4:0]
+    input  wire [DATA_WIDTH-1:0]  trap_tval_i,     // mtval: bad address / instruction / pc, else 0
     input  wire [DATA_WIDTH-1:0]  trap_pc_i,
 
     //  MRET commit
@@ -232,7 +235,7 @@ module csr_file
             //  save context, mask interrupts
             mepc_r         <= {trap_pc_i[31:2], 2'b00};
             mcause_r       <= {trap_cause_i[5], 26'b0, trap_cause_i[4:0]};
-            mtval_r        <= '0;
+            mtval_r        <= trap_tval_i;
             mstatus_mpie_r <= mstatus_mie_r;
             mstatus_mie_r  <= 1'b0;
 

@@ -13,6 +13,16 @@
  *     +0x4000  spare AXI slot 3
  *     +0x5000  spare AXI slot 4
  *     +0x6000  spare AXI slot 5
+ *
+ * Access faults (RTL/cache_system_top.sv, RTL/icache.sv; handled with trap.h):
+ *   load  access fault (mcause 5): address not mapped, read of the D-cache
+ *                                  flush register (write-only), spare slot
+ *                                  without a slave (System_top SLOT_PRESENT)
+ *   store access fault (mcause 7): same, plus any store to IMEM (read-only
+ *                                  for data) and to the flush page other
+ *                                  than DCACHE_FLUSH_BASE itself
+ *   instruction access fault (1):  fetch outside IMEM and DMEM
+ *   mtval = the faulting address. The access never reaches the bus.
  */
 
 #define IMEM_BASE         0x40000000u

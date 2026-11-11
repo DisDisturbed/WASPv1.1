@@ -1,5 +1,6 @@
-/* Self-test for the Zicntr CSRs, the CLINT (timer + software interrupt) and
- * the memory map (PLIC register page, IMEM data reads, D-cache flush).
+/* Self-test for the Zicntr CSRs, the CLINT (timer + software interrupt),
+ * the memory map (PLIC register page, IMEM data reads, D-cache flush) and the
+ * trap driver (access faults, ebreak, FENCE.I / generated code, x/0).
  * Prints one line per check over UART and ends with "ALL PASS" or
  * "FAILED <n>". Build: make -C sw PROG=counters (wasp only: it tests the hardware)
  */
@@ -10,6 +11,7 @@
 #include "clint.h"
 #include "cache.h"
 #include "memmap.h"
+#include "trap.h"
 
 static volatile uint32_t g_irq_cause;
 static volatile uint32_t g_irq_count;
@@ -104,6 +106,91 @@ static int wait_irq(uint32_t count_before, uint32_t max_cycles) {
     while (g_irq_count == count_before)
         if (rdcycle() - start > max_cycles) return 0;
     return 1;
+}
+
+/* ---- trap driver (trap.h): access faults, ebreak, FENCE.I, x/0 ------- */
+static volatile uint32_t g_tcause, g_tepc, g_tval, g_tcount;
+static volatile uint32_t g_resume;          /* where a fetch fault continues */
+
+static void on_exception(trap_frame_t *f) {
+    g_tcause = f->mcause; g_tepc = f->mepc; g_tval = f->mtval; g_tcount++;
+    if (f->mcause == MCAUSE_INSN_ACCESS) f->mepc = g_resume;   /* back to the caller */
+    else trap_skip(f);                                         /* skip the faulting insn */
+}
+
+/* single instructions with a known destination register */
+static uint32_t try_load(uint32_t addr) {
+    uint32_t v = 0xA5A5A5A5u;
+    __asm__ volatile ("lw %0, 0(%1)" : "+r"(v) : "r"(addr) : "memory");
+    return v;
+}
+static void try_store(uint32_t addr) {
+    __asm__ volatile ("sw zero, 0(%0)" :: "r"(addr) : "memory");
+}
+static void try_fetch(uint32_t addr) {   /* jump there, fault, resume at 1: */
+    __asm__ volatile ("la t1, 1f\n\tsw t1, %1\n\tjalr ra, 0(%0)\n1:"
+                      :: "r"(addr), "m"(g_resume) : "ra", "t1", "memory");
+}
+
+static int faulted(uint32_t n, uint32_t cause, uint32_t tval) {
+    return g_tcount == n + 1 && g_tcause == cause && g_tval == tval;
+}
+
+static uint32_t code_buf[16] __attribute__((aligned(64)));   /* DMEM: executable */
+typedef uint32_t (*fn_t)(void);
+
+static void trap_checks(void) {
+    trap_init();
+    trap_set_exception_handler(MCAUSE_INSN_ACCESS,  on_exception);
+    trap_set_exception_handler(MCAUSE_LOAD_ACCESS,  on_exception);
+    trap_set_exception_handler(MCAUSE_STORE_ACCESS, on_exception);
+    trap_set_exception_handler(MCAUSE_BREAKPOINT,   on_exception);
+
+    uint32_t n = g_tcount;
+    uint32_t v = try_load(0x30000000u);
+    check("load unmapped: access fault", faulted(n, MCAUSE_LOAD_ACCESS, 0x30000000u), g_tcause);
+    check("load unmapped: rd not written", v == 0xA5A5A5A5u, v);
+
+    uint32_t imem0 = REG32(IMEM_BASE);
+    n = g_tcount; try_store(IMEM_BASE);
+    check("store to IMEM: access fault", faulted(n, MCAUSE_STORE_ACCESS, IMEM_BASE), g_tcause);
+    check("store to IMEM: no effect", REG32(IMEM_BASE) == imem0, REG32(IMEM_BASE));
+
+    n = g_tcount; (void)try_load(DCACHE_FLUSH_BASE);
+    check("read flush reg: access fault", faulted(n, MCAUSE_LOAD_ACCESS, DCACHE_FLUSH_BASE), g_tcause);
+    n = g_tcount; (void)try_load(SLOT3_BASE);
+    check("empty slot: access fault", faulted(n, MCAUSE_LOAD_ACCESS, SLOT3_BASE), g_tcause);
+
+    n = g_tcount; try_fetch(0x30000000u);
+    check("fetch unmapped: insn access fault",
+          faulted(n, MCAUSE_INSN_ACCESS, 0x30000000u) && g_tepc == 0x30000000u, g_tcause);
+
+    g_flush_word = 0x0BADC0DEu;
+    check("bus usable after faults", g_flush_word == 0x0BADC0DEu, g_flush_word);
+
+    n = g_tcount;
+    __asm__ volatile ("1: ebreak\n\tla %0, 1b" : "=r"(v));
+    check("ebreak: mtval = pc", faulted(n, MCAUSE_BREAKPOINT, v), g_tval);
+
+    /* generated code in DMEM: li a0, 42; ret -> run -> li a0, 43 -> run */
+    code_buf[0] = 0x02A00513u;   /* addi a0, zero, 42 */
+    code_buf[1] = 0x00008067u;   /* ret */
+    icache_sync();
+    uint32_t r1 = ((fn_t)(uintptr_t)code_buf)();
+    code_buf[0] = 0x02B00513u;   /* addi a0, zero, 43: the old one is in the I-cache now */
+    icache_sync();
+    uint32_t r2 = ((fn_t)(uintptr_t)code_buf)();
+    check("fence.i: run generated code", r1 == 42u, r1);
+    check("fence.i: run rewritten code", r2 == 43u, r2);
+
+    /* division by zero: defined results, no trap */
+    volatile int32_t a = -7, z = 0;
+    volatile uint32_t ua = 7;
+    n = g_tcount;
+    int32_t  q  = a / z, r = a % z;
+    uint32_t uq = ua / (uint32_t)z, ur = ua % (uint32_t)z;
+    check("x/0 = -1, x%0 = x, no trap",
+          q == -1 && r == -7 && uq == 0xFFFFFFFFu && ur == 7u && g_tcount == n, (uint32_t)q);
 }
 
 int main(void) {
@@ -216,6 +303,7 @@ int main(void) {
     check("irq stress: >100 irqs taken", taken > 100u, taken);
 
     memmap_checks();
+    trap_checks();
 
     uart_puts("mcycle=0x"); uart_puthex64(rdcycle64());
     uart_puts(" minstret=0x"); uart_puthex64(rdinstret64());

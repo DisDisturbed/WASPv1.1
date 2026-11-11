@@ -36,6 +36,7 @@ module hazard_unit
     input  wire                     id_is_branch_i,
     input  wire                     id_jalr_i,
     input  wire                     id_csr_read_i,       // CSR instr or MRET (reads mepc) in ID
+    input  wire                     id_cnt_read_i,       // CSR instr in ID reads minstret/instret(h)
     input  wire                     id_trap_req_i,       // ID wants to trap / take irq / mret
 
     input  id_ex_bundle_t           id_ex_i,
@@ -50,6 +51,7 @@ module hazard_unit
 
     input  wire                     trap_take_i,
     input  wire                     mret_take_i,
+    input  wire                     mem_exc_i,           // MEM_stage: exception not yet redirected
 
     output logic [1:0]              forward_a_sel_o,
     output logic [1:0]              forward_b_sel_o,
@@ -79,6 +81,12 @@ module hazard_unit
 
     logic ex_redirect_jump;
     assign ex_redirect_jump = ex_mem_i.is_jump | ex_mem_i.is_jarl;
+
+    // FENCE.I in MEM: once the caches are synchronised (lsu_busy drops) it
+    // redirects to pc+4 exactly like a jump, so everything fetched after it
+    // (possibly stale) is flushed and refetched from the invalidated I-cache.
+    logic ex_redirect;
+    assign ex_redirect = ex_redirect_jump | ex_mem_i.fencei;
 
     always_comb begin : fwd_a
         if (ex_mem_i.reg_write && (ex_mem_i.rd_addr != '0) &&
@@ -116,9 +124,21 @@ module hazard_unit
     // CSR read-after-write: CSRs are read in ID but written in WB, so a
     // CSR access (or MRET, which reads mepc) has to wait until no older
     // CSR write is left in EX/MEM/WB. Same bubble mechanism as load-use.
+    // Traps and MRETs write CSRs in WB as well (mepc/mcause/mtval/mstatus),
+    // so they count as in-flight CSR writes: a handler's first
+    // `csrr t0, mcause` must not read the previous cause because the
+    // trap it belongs to has not reached WB yet.
     logic csr_raw_stall;
     assign csr_raw_stall = id_csr_read_i &&
-                           (id_ex_i.csr_we || ex_mem_i.csr_we || mem_wb_i.csr_we);
+                           (id_ex_i.csr_we || ex_mem_i.csr_we || mem_wb_i.csr_we ||
+                            id_ex_i.trap   || ex_mem_i.trap   || mem_wb_i.trap   ||
+                            id_ex_i.mret   || ex_mem_i.mret   || mem_wb_i.mret);
+
+    // minstret is read in ID but counts in WB: a read must wait until every
+    // older instruction has retired, or it misses up to three of them.
+    logic cnt_read_stall;
+    assign cnt_read_stall = id_cnt_read_i &&
+                            (id_ex_i.valid || ex_mem_i.valid || mem_wb_i.valid);
 
     // Wrong-path kill: when EX/MEM redirects, the instruction in ID is on
     // the wrong path. Before this, trap_take (incl. interrupts) had priority
@@ -135,14 +155,14 @@ module hazard_unit
     // beat the ex_busy stall, the trap bubble overwrote id_ex mid-operation
     // and the MUL/DIV result was lost.
     logic ex_ctrl_flow, trap_hold;
-    assign ex_ctrl_flow = id_ex_i.is_branch || id_ex_i.is_jump || id_ex_i.jalr;
+    assign ex_ctrl_flow = id_ex_i.is_branch || id_ex_i.is_jump || id_ex_i.jalr || id_ex_i.fencei;
     assign trap_hold    = id_trap_req_i && (ex_ctrl_flow || ex_busy_i);
 
     logic id_hold;
-    assign id_hold = csr_raw_stall || trap_hold;
+    assign id_hold = csr_raw_stall || cnt_read_stall || trap_hold;
 
     assign id_kill_o = !lsu_busy_i &&
-                       (branch_decision_i || ex_redirect_jump || id_hold);
+                       (mem_exc_i || branch_decision_i || ex_redirect || id_hold);
 
     always_comb begin : pc_ctrl
         pc_set_o                 = 1'b0;
@@ -152,6 +172,14 @@ module hazard_unit
 
         if (lsu_busy_i) begin
             // Absolute freeze - no redirect allowed; pc_set stays 0
+        end else if (mem_exc_i) begin
+            // Exception raised in EX/MEM (misaligned jump target, misaligned
+            // load/store): it is older than anything in IF/ID/EX, so it wins
+            // over an ID trap/mret and over its own branch/jump redirect.
+            pc_set_o                 = 1'b1;
+            pc_mux_o                 = PC_EXCEPTION;
+            exc_pc_mux_o             = EXC_PC_EXCEPTION;
+            trap_redirect_accepted_o = 1'b1;
         end else if (trap_take_i) begin
             pc_set_o                 = 1'b1;
             pc_mux_o                 = PC_EXCEPTION;
@@ -164,7 +192,7 @@ module hazard_unit
         end else if (branch_decision_i) begin
             pc_set_o = 1'b1;
             pc_mux_o = PC_BRANCH;
-        end else if (ex_redirect_jump) begin
+        end else if (ex_redirect) begin
             pc_set_o = 1'b1;
             pc_mux_o = PC_JUMP;
         end
@@ -192,10 +220,17 @@ module hazard_unit
             stall_ex_o  = 1'b1;
             stall_mem_o = 1'b1;
 
+        end else if (mem_exc_i) begin
+            // squash the younger instructions; the excepting one moves on
+            // to WB and commits mepc/mcause there
+            flush_if_o = 1'b1;
+            flush_id_o = 1'b1;
+            flush_ex_o = 1'b1;
+
         end else if (trap_take_i || mret_take_i) begin
             flush_id_o = 1'b1;
 
-        end else if (branch_decision_i || ex_redirect_jump) begin
+        end else if (branch_decision_i || ex_redirect) begin
             flush_if_o = 1'b1;
             flush_id_o = 1'b1;
             flush_ex_o = 1'b1;
