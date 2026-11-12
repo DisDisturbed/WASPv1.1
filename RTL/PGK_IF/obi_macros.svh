@@ -44,7 +44,7 @@
 
 // ---- Straight 1:1 pass-through for cases where declaring/sharing a single
 //      interface instance between two ports isn't convenient (e.g. bridging
-//      an interface leg to a not-yet-converted flat-port module). Response
+//      an interface leg to a flat-port module). Response
 //      side still needs a real mux if there is more than one slave leg --
 //      this macro is only correct for an actual 1:1 connection.
 `define OBI_DATA_CONNECT(SLV, MST) \
@@ -67,9 +67,7 @@
     assign MST.err    = SLV.err;
 
 // ---- Tie-offs for a leg that legitimately has no connectee (optional
-//      peripherals, unused legs in a testbench, etc.) -- kept here for the
-//      same "expandability" reason core_pkg.sv keeps priv_mode around
-//      unused: cheap to have available, one line to use when needed.
+//      peripherals, unused legs in a testbench, etc.).
 `define OBI_DATA_TIE_OFF_MASTER(MST) \
     assign MST.req   = 1'b0; \
     assign MST.addr  = '0; \

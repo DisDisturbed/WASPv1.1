@@ -33,10 +33,8 @@
 //  trap/mret cycles, and a CSR write to a counter wins over that cycle's
 //  increment (the next instruction reads exactly the value written).
 //
-// Address map and csr_op_e now come from core_pkg (this module used to be
-// the sole owner of the address localparams; U/S-mode work needs those
-// addresses visible to other stages too, so they moved up a level -- the
-// M-mode values below are byte-for-byte the same as before).
+// The CSR address map and csr_op_e are defined in core_pkg, so the other
+// stages that decode CSR accesses use the same names.
 //
 // NOTE: accesses to non-existent CSRs and writes to read-only CSRs never
 // reach this module: control_unit (csr_legal) decodes them as illegal
@@ -84,7 +82,6 @@ module csr_file
     input  wire [63:0]            mtime_i,
 
     // current register states for pipeline visiblity
-    output logic [DATA_WIDTH-1:0] mtvec_o,
     output logic [DATA_WIDTH-1:0] mepc_o,
     output logic                  mstatus_mie_o,
     output logic [DATA_WIDTH-1:0] mie_o,
@@ -298,7 +295,6 @@ module csr_file
     end
 
     //  outputs assigning them this was is a good idea for simulation since it add delta cycle
-    assign mtvec_o            = mtvec_r;
     assign mepc_o             = mepc_r;
     assign mstatus_mie_o      = mstatus_mie_r;
     assign mie_o              = mie_rdata_w;

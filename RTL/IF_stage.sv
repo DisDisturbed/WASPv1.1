@@ -1,17 +1,13 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// pc_mux_sel_e / exc_pc_mux_e / trap_mode_e used to be defined locally
-// here AND duplicated (as raw localparams) in hazard_unit -- both are now
-// core_pkg::pc_mux_sel_e / core_pkg::exc_pc_mux_e / core_pkg::trap_addr_mux_e,
-// so the two modules that must agree on these encodings share one
-// definition instead of two hand-copied ones.
+// PC mux and trap-base encodings are core_pkg::pc_mux_sel_e,
+// core_pkg::exc_pc_mux_e and core_pkg::trap_addr_mux_e, shared with
+// hazard_unit, which drives them.
 //
-// instr_en_o/instr_addr_o/instr_gnt_i/instr_rvalid_i/instr_rdata_i are
-// replaced by a single obi_instr_if.master port: this is exactly the OBI
-// bus core_pkg.sv's header calls out as belonging in a real interface,
-// since the memory on the other end is not a fixed connectee (sim BRAM
-// model vs. real memory controller vs. icache).
+// Instruction memory side: one obi_instr_if.master port. It is a real
+// interface because the other end is not a fixed connectee (I-cache, a
+// simulation memory model, a memory controller).
 module IF_stage
     import core_pkg::*;
 #(
@@ -43,7 +39,6 @@ module IF_stage
     input  wire                  pc_set_i,
 
     // jump and branches
-    input  wire [DATA_WIDTH-1:0] jump_target_mem_i,
     input  wire [DATA_WIDTH-1:0] jump_target_ex_i,
 
     // OBI instruction-memory master port
@@ -54,17 +49,14 @@ module IF_stage
     input  wire flush_i,
 
     //  csr
-    output logic csr_mtvec_init_o,
 
     // if/id pipeline
     output logic [DATA_WIDTH-1:0] instr_rdata_id_o,
     output logic                  instr_valid_id_o,   // 0 = NOP bubble inserted by IF (for minstret)
     output logic                  instr_err_id_o,     // fetch refused (instruction access fault)
     output logic [DATA_WIDTH-1:0] pc_if_o,
-    output logic [DATA_WIDTH-1:0] pc_id_o,
-    output logic                  if_busy_o
+    output logic [DATA_WIDTH-1:0] pc_id_o
 );
-    assign if_busy_o = 1'b0;
 
     logic [23:0]           trap_base_w;
     logic [4:0]            exc_vec_w;
@@ -101,13 +93,6 @@ module IF_stage
             default:      branch_addr_w = {boot_addr_i[31:2], 2'b00};
         endcase
     end
-
-    logic mtvec_init_r;
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) mtvec_init_r <= 1'b1;
-        else        mtvec_init_r <= 1'b0;
-    end
-    assign csr_mtvec_init_o = mtvec_init_r;
 
     logic [DATA_WIDTH-1:0] pc_r;
     logic pending_q;     // obi signals

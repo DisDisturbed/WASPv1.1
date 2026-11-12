@@ -26,7 +26,7 @@
 module tb_rvtest #(parameter logic [31:0] BOOT = 32'h4000_0000);
     logic clk = 0;
     logic rst_n = 0;
-    logic mie, dont_opt, tx;
+    logic mie, tx;
 
     always #5 clk = ~clk;
 
@@ -37,8 +37,6 @@ module tb_rvtest #(parameter logic [31:0] BOOT = 32'h4000_0000);
         .plic_irq_i         ('0),
         .uart_rx_i          (1'b1),
         .uart_tx_o          (tx),
-        .physical_button_pin(1'b0),
-        .dont_opt           (dont_opt),
         .mie_o_tb           (mie)
     );
 

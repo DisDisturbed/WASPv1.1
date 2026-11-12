@@ -1,23 +1,12 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// Takes the EX/MEM bundle directly instead of ~14 individually-named
-// ex_*_i ports. Several of those original ports (csr_addr/csr_op/
-// csr_wdata/csr_access/csr_we/mret) were declared but never referenced in
-// this module's logic; they still ride along inside ex_mem_i (available if
-// a future revision needs them) but nothing here reads them, same as
-// before.
-//
-// data_req_o/data_gnt_i/data_rvalid_i/data_addr_o/data_we_o/strb_o/
-// data_wdata_o/data_rdata_i collapse into a single obi_data_if.master
-// port -- see obi_if.sv for why this boundary gets a real interface.
+// Takes the EX/MEM bundle directly and reads only its load/store fields.
+// The data memory side is one obi_data_if.master port (see obi_if.sv).
 module load_store_unit
     import core_pkg::*;
 (
-    input  wire        clk,
-    input  wire        rst_n,
-
-    obi_data_if.master  data_bus, 
+    obi_data_if.master  data_bus,
 
     input  ex_mem_bundle_t ex_mem_i,
 
@@ -25,11 +14,7 @@ module load_store_unit
     input  wire          data_req_ex_i,
 
     output logic        lsu_trap_o,
-    output logic [5:0]  lsu_trap_cause_o,
-
-    output logic        lsu_ready_ex_o,
-    output logic        lsu_ready_commit_o,
-    output logic        lsu_busy_o
+    output logic [5:0]  lsu_trap_cause_o
 );
 
     assign data_bus.addr = ex_mem_i.alu_res;
@@ -170,8 +155,5 @@ module load_store_unit
     end
     end
 
-    assign lsu_busy_o         =  access_ok & ~data_bus.gnt;
-    assign lsu_ready_ex_o     = ~lsu_busy_o;
-    assign lsu_ready_commit_o = ~access_ok | data_bus.gnt;
 
 endmodule

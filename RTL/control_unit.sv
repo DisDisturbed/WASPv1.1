@@ -1,18 +1,16 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// branch_type_o / wb_ctrl_o / csr_op_o now emit the core_pkg enums directly
-// -- this is the module that is the source of truth for those encodings,
-// so casting the raw instruction-field bits into the named type here (once)
-// is what lets EX_stage/WB_stage/csr_file consume named values instead of
-// re-deriving meaning from a bare 2-3 bit number.
+// branch_type_o / wb_ctrl_o / csr_op_o are core_pkg enums. This module is
+// the source of truth for those encodings: the raw instruction-field bits
+// are cast into the named type here, once, and EX_stage / WB_stage /
+// csr_file consume the named values.
 //
-// op_type / F7 / SYSTEM / imm_sel_e stay as local typedefs: they are not
-// duplicated anywhere else in the design, so promoting them to core_pkg
-// would add a dependency without removing any duplication risk.
+// op_type / F7 / SYSTEM / imm_sel_e are local typedefs: nothing else in
+// the design uses them.
 //
-// alu_ctrl_o / mem_ctrl_o / muldiv_ctrl_o stay raw vectors -- see
-// core_pkg.sv header ("WHAT WAS DELIBERATELY *NOT* PROMOTED").
+// alu_ctrl_o / mem_ctrl_o / muldiv_ctrl_o are raw vectors; their
+// encodings are defined by Alu, load_store_unit and MulDiv.
 module control_unit
     import core_pkg::*;
 (
@@ -42,8 +40,6 @@ module control_unit
     // ex signals
     output logic        is_muldiv_o,
     output logic [2:0]  muldiv_ctrl_o,
-    output logic        is_mul_o,
-    output logic        is_div_o,
 
     // mem/wb control
     output logic [2:0]  mem_ctrl_o,
@@ -160,8 +156,6 @@ module control_unit
 
         is_muldiv_o     = 1'b0;
         muldiv_ctrl_o   = 3'b000;
-        is_mul_o        = 1'b0;
-        is_div_o        = 1'b0;
 
         mem_ctrl_o      = 3'b000;
         is_load_o       = 1'b0;
@@ -185,8 +179,6 @@ module control_unit
                 if (funct7 == F7_MEXT) begin
                     is_muldiv_o   = 1'b1;
                     muldiv_ctrl_o = funct3;
-                    is_mul_o      = ~funct3[2];
-                    is_div_o      =  funct3[2];
                 end
                 else if (funct7 == F7_BASE || funct7 == F7_ALT) begin
                     case (funct3)

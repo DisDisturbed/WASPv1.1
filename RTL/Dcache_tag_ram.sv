@@ -3,7 +3,7 @@ module dcache_tag_ram #(
     parameter ADDR_WIDTH = 32
 )(
     input wire clk_i,
-    input wire rst_i,
+    input wire rst_ni,   // active low, asynchronous
     input wire [ADDR_WIDTH-1:0] addr_i,
     input wire dirty_in,
     input wire valid_in,
@@ -21,13 +21,16 @@ module dcache_tag_ram #(
         for(i=0; i<TAG_COUNT; i=i+1) tags[i] = 0;
     end
 
+    // the tag array has no reset (maps to RAM); only the read register does
     always @(posedge clk_i) begin
-    if (rst_i) begin
-        tag_o <= 22'b0;        
-    end else begin
         if (wr_en)
             tags[index] <= {dirty_in, valid_in, new_tag};
-        tag_o <= tags[index];
     end
-end
+
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni)
+            tag_o <= 22'b0;
+        else
+            tag_o <= tags[index];
+    end
 endmodule

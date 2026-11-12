@@ -24,7 +24,7 @@ module tb_sim #(parameter logic [31:0] BOOT = 32'h4000_0000);  // IMEM base
     logic clk = 0;
     logic rst_n = 0;
     logic [4:0] plic_irq = '0;
-    logic mie, dont_opt, tx;
+    logic mie, tx;
 
     always #5 clk = ~clk;
 
@@ -35,8 +35,6 @@ module tb_sim #(parameter logic [31:0] BOOT = 32'h4000_0000);  // IMEM base
         .plic_irq_i         (plic_irq),
         .uart_rx_i          (1'b1),
         .uart_tx_o          (tx),
-        .physical_button_pin(1'b0),
-        .dont_opt           (dont_opt),
         .mie_o_tb           (mie)
     );
 

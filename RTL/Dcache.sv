@@ -1,13 +1,11 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// core_addr_i/core_req_i/core_we_i/core_wstrb_i/core_wdata_i/core_rdata_o/
-// core_gnt_o/core_rvalid_o collapse into a single obi_data_if.slave port
-// (core_bus). In cache_system_top this connects to a dedicated interface
-// instance that's one leg of the core-data-bus arbiter (see
-// obi_macros.svh) -- unlike icache's 1:1 share with Core_Top, dcache
-// shares its master (the core) with PLIC, so its leg needs its own
-// interface instance rather than reusing Core_Top's directly.
+// Direct-mapped write-back data cache: 64 lines of 16 words.
+// Core side: OBI slave (one leg of the core data bus in cache_system_top).
+// Memory side: AXI4 master. Lines are refilled and written back with 16-beat
+// INCR bursts; addresses outside the cacheable range bypass the cache with
+// single-beat accesses. An AXI error response is reported to the core as err.
 module dcache #(
     parameter int          ADDR_WIDTH         = 32,
     parameter int          DATA_WIDTH         = 32,
@@ -20,7 +18,7 @@ module dcache #(
     parameter logic [31:0] CACHE_RANGE_UPPER  = 32'h8000FFFF
 )(
     input  wire clk,
-    input  wire rst,
+    input  wire rst_n,
 
     // OBI data-memory slave port
     obi_data_if.slave core_bus,
@@ -30,50 +28,19 @@ module dcache #(
     input  wire        flush_all_req_i,
     output logic       flush_all_done_o,
 
-    output logic        m_axi_awvalid,
-    input  wire         m_axi_awready,
-    output logic [31:0] m_axi_awaddr,
-    output wire  [3:0]  m_axi_awid,
-    output logic [7:0]  m_axi_awlen,
-    output wire  [2:0]  m_axi_awsize,
-    output wire  [1:0]  m_axi_awburst,
-
-    output logic        m_axi_wvalid,
-    input  wire         m_axi_wready,
-    output logic [31:0] m_axi_wdata,
-    output logic [3:0]  m_axi_wstrb,
-    output logic        m_axi_wlast,
-
-    input  wire         m_axi_bvalid,
-    output wire         m_axi_bready,
-    input  wire [1:0]   m_axi_bresp,
-    input  wire [3:0]   m_axi_bid,
-
-    output logic        m_axi_arvalid,
-    input  wire         m_axi_arready,
-    output logic [31:0] m_axi_araddr,
-    output wire  [3:0]  m_axi_arid,
-    output logic [7:0]  m_axi_arlen,
-    output wire  [2:0]  m_axi_arsize,
-    output wire  [1:0]  m_axi_arburst,
-
-    input  wire         m_axi_rvalid,
-    output wire         m_axi_rready,
-    input  wire [31:0]  m_axi_rdata,
-    input  wire         m_axi_rlast,
-    input  wire [1:0]   m_axi_rresp,
-    input  wire [3:0]   m_axi_rid
+    // AXI4 master (refill, write-back, bypass)
+    axi_if.master m_axi
 );
 
-    assign m_axi_awid    = 4'd0;
-    assign m_axi_awsize  = 3'b010;
-    assign m_axi_awburst = 2'b01;   // INCR
-    assign m_axi_bready  = 1'b1;
+    assign m_axi.awid    = '0;
+    assign m_axi.awsize  = axi_pkg::AXI_SIZE_WORD;
+    assign m_axi.awburst = axi_pkg::AXI_BURST_INCR;
+    assign m_axi.bready  = 1'b1;
 
-    assign m_axi_arid    = 4'd0;
-    assign m_axi_arsize  = 3'b010;
-    assign m_axi_arburst = 2'b01;
-    assign m_axi_rready  = 1'b1;
+    assign m_axi.arid    = '0;
+    assign m_axi.arsize  = axi_pkg::AXI_SIZE_WORD;
+    assign m_axi.arburst = axi_pkg::AXI_BURST_INCR;
+    assign m_axi.rready  = 1'b1;
 
     typedef enum logic [3:0] {
         IDLE       = 4'd0,
@@ -105,7 +72,7 @@ module dcache #(
     logic [5:0]          flush_line_r;   // flush target line index (from wdata)
     logic                flush_all_r;    // walking all lines (FENCE.I)
     logic                err_r;          // AXI error (rresp/bresp != OKAY) on this access
-    wire                 rresp_err_w = m_axi_rvalid && (m_axi_rresp != 2'b00);
+    wire                 rresp_err_w = m_axi.rvalid && (m_axi.rresp != axi_pkg::AXI_RESP_OKAY);
 
     // A flush carries FLUSH_CTRL_ADDR (outside the cacheable range) in
     // req_addr_r but writes back a cached line: it must never take the
@@ -158,7 +125,7 @@ module dcache #(
 
             EVICT_DATA: begin
                 active_line_w = target_line_w;
-                active_word_w = m_axi_wready ? burst_cnt_r + 4'd1 : burst_cnt_r;
+                active_word_w = m_axi.wready ? burst_cnt_r + 4'd1 : burst_cnt_r;
             end
 
             REFILL: begin
@@ -178,8 +145,8 @@ module dcache #(
     logic        valid_bit_in;
 
     wire [31:0] ram_rdata_w;
-    always_ff @(posedge clk) begin
-        if (rst) begin
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
             state_r        <= IDLE;
             req_addr_r     <= '0;
             req_we_r       <= 1'b0;
@@ -219,14 +186,14 @@ module dcache #(
             end
 
             if ((state_r == REFILL && rresp_err_w) ||
-                (state_r == BP_WR_RESP && m_axi_bvalid && m_axi_bresp != 2'b00))
+                (state_r == BP_WR_RESP && m_axi.bvalid && m_axi.bresp != axi_pkg::AXI_RESP_OKAY))
                 err_r <= 1'b1;
 
             if (state_r == LOOKUP && !tag_hit_w)
                 evict_tag_r <= stored_tag_w;
 
-            if ((state_r == REFILL     && m_axi_rvalid) ||
-                (state_r == EVICT_DATA && m_axi_wready))
+            if ((state_r == REFILL     && m_axi.rvalid) ||
+                (state_r == EVICT_DATA && m_axi.wready))
                 burst_cnt_r <= burst_cnt_r + 1;
             else if (state_r == IDLE      ||
                      state_r == LOOKUP    ||
@@ -234,12 +201,12 @@ module dcache #(
                      state_r == FETCH_ADDR)
                 burst_cnt_r <= 4'd0;
 
-            if (state_r == REFILL && m_axi_rvalid &&
+            if (state_r == REFILL && m_axi.rvalid &&
                 burst_cnt_r == req_addr_r[5:2])
-                capture_data_r <= m_axi_rdata;
+                capture_data_r <= m_axi.rdata;
 
-            if (state_r == REFILL && is_bypass_w && m_axi_rvalid)
-                capture_data_r <= m_axi_rdata;
+            if (state_r == REFILL && is_bypass_w && m_axi.rvalid)
+                capture_data_r <= m_axi.rdata;
         end
     end
 
@@ -253,27 +220,27 @@ module dcache #(
 
         ram_wr_en     = 1'b0;
         ram_wstrb     = 4'b1111;
-        ram_wdata     = m_axi_rdata;
+        ram_wdata     = m_axi.rdata;
         tag_wr_en     = 1'b0;
         dirty_bit_in  = 1'b0;
         valid_bit_in  = 1'b0;
 
-        m_axi_arvalid = 1'b0;
-        m_axi_araddr  = is_bypass_w
+        m_axi.arvalid = 1'b0;
+        m_axi.araddr  = is_bypass_w
                         ? {req_addr_r[31:2], 2'b0}
                         : {req_addr_r[31:6], 6'b0};
-        m_axi_arlen   = is_bypass_w ? 8'd0 : 8'd15;
+        m_axi.arlen   = is_bypass_w ? 8'd0 : 8'd15;
 
-        m_axi_awvalid = 1'b0;
-        m_axi_awaddr  = is_bypass_w
+        m_axi.awvalid = 1'b0;
+        m_axi.awaddr  = is_bypass_w
                         ? {req_addr_r[31:2], 2'b0}
                         : {evict_tag_r, target_line_w, 6'b0};
-        m_axi_awlen   = is_bypass_w ? 8'd0 : 8'd15;
+        m_axi.awlen   = is_bypass_w ? 8'd0 : 8'd15;
 
-        m_axi_wvalid  = 1'b0;
-        m_axi_wlast   = 1'b0;
-        m_axi_wdata   = ram_rdata_w;
-        m_axi_wstrb   = 4'b1111;
+        m_axi.wvalid  = 1'b0;
+        m_axi.wlast   = 1'b0;
+        m_axi.wdata   = ram_rdata_w;
+        m_axi.wstrb   = 4'b1111;
 
         unique case (state_r)
 
@@ -329,21 +296,21 @@ module dcache #(
             end
 
             EVICT_ADDR: begin
-                m_axi_awvalid = 1'b1;
-                if (m_axi_awready)
+                m_axi.awvalid = 1'b1;
+                if (m_axi.awready)
                     next_s = EVICT_DATA;
             end
 
             EVICT_DATA: begin
-                m_axi_wvalid = 1'b1;
-                m_axi_wlast  = (burst_cnt_r == 4'd15);
+                m_axi.wvalid = 1'b1;
+                m_axi.wlast  = (burst_cnt_r == 4'd15);
 
-                if (m_axi_wready && (burst_cnt_r == 4'd15))
+                if (m_axi.wready && (burst_cnt_r == 4'd15))
                     next_s = WAIT_BRESP;
             end
 
             WAIT_BRESP: begin
-                if (m_axi_bvalid) begin
+                if (m_axi.bvalid) begin
                     if (is_flush_r) begin
                         tag_wr_en    = 1'b1;
                         valid_bit_in = 1'b0;
@@ -357,18 +324,18 @@ module dcache #(
             end
 
             FETCH_ADDR: begin
-                m_axi_arvalid = 1'b1;
-                if (m_axi_arready)
+                m_axi.arvalid = 1'b1;
+                if (m_axi.arready)
                     next_s = REFILL;
             end
 
             REFILL: begin
-                if (m_axi_rvalid) begin
+                if (m_axi.rvalid) begin
                     ram_wr_en = !is_bypass_w;
                     ram_wstrb = 4'b1111;
-                    ram_wdata = m_axi_rdata;
+                    ram_wdata = m_axi.rdata;
 
-                    if (m_axi_rlast) begin
+                    if (m_axi.rlast) begin
                         if (!is_bypass_w) begin
                             // a refill that saw an AXI error is not cached
                             tag_wr_en    = 1'b1;
@@ -399,22 +366,22 @@ module dcache #(
             end
 
             BP_WR_ADDR: begin
-                m_axi_awvalid = 1'b1;
-                if (m_axi_awready)
+                m_axi.awvalid = 1'b1;
+                if (m_axi.awready)
                     next_s = BP_WR_DATA;
             end
 
             BP_WR_DATA: begin
-                m_axi_wvalid = 1'b1;
-                m_axi_wlast  = 1'b1;
-                m_axi_wdata  = req_wdata_r;
-                m_axi_wstrb  = req_wstrb_r;
-                if (m_axi_wready)
+                m_axi.wvalid = 1'b1;
+                m_axi.wlast  = 1'b1;
+                m_axi.wdata  = req_wdata_r;
+                m_axi.wstrb  = req_wstrb_r;
+                if (m_axi.wready)
                     next_s = BP_WR_RESP;
             end
 
             BP_WR_RESP: begin
-                if (m_axi_bvalid)
+                if (m_axi.bvalid)
                     next_s = SERVE;
             end
 
@@ -425,7 +392,7 @@ module dcache #(
     dcache_data_ram u_data_ram (
         .clk_i     (clk),
         .req_i     (1'b1),
-        .rst       (rst),
+        .rst_n     (rst_n),
         .wr_en     (ram_wr_en),
         .wstrb_i   (ram_wstrb),
         .line_idx_i(active_line_w),
@@ -435,7 +402,7 @@ module dcache #(
     );
     dcache_tag_ram u_tag_ram (
         .clk_i   (clk),
-        .rst_i   (rst),
+        .rst_ni  (rst_n),
         .addr_i  (active_tag_addr_w),
         .dirty_in(dirty_bit_in),
         .valid_in(valid_bit_in),
@@ -446,8 +413,8 @@ module dcache #(
     logic [31:0] perf_misses_r;
     logic [31:0] perf_evictions_r;
 
-    always_ff @(posedge clk) begin
-        if (rst) begin
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
             perf_hits_r      <= '0;
             perf_misses_r    <= '0;
             perf_evictions_r <= '0;
@@ -456,7 +423,7 @@ module dcache #(
                 if (tag_hit_w) perf_hits_r   <= perf_hits_r   + 1;
                 else           perf_misses_r <= perf_misses_r + 1;
             end
-            if (state_r == EVICT_ADDR && m_axi_awready)
+            if (state_r == EVICT_ADDR && m_axi.awready)
                 perf_evictions_r <= perf_evictions_r + 1;
         end
     end

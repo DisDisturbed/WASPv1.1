@@ -190,7 +190,8 @@ driver"). Design details: `docs/memory_map.md`.
 ### Access faults (mcause 1 / 5 / 7)
 
 * **OBI `err`** response signal added to both buses (`obi_if.sv`, valid with `rvalid`).
-* **Data side.** `cache_system_top` checks every core access against the memory map before
+* **Data side** (as built for this change; the check has since moved onto the bus, see
+  section 7 and docs/memory_map.md). `cache_system_top` checks every core access against the memory map before
   it reaches the D-cache. Anything the map cannot serve gets an immediate `gnt+rvalid+err`
   from an error leg: unmapped, store to IMEM (read-only for data), read of the write-only
   flush register, other offsets of the flush page, or a spare slot without a slave
@@ -263,11 +264,10 @@ A waived test that starts passing shows up as `PASS (waived)`, so the waiver can
 
 ## 7. Still open (not changed)
 
-* `axi_crossbar_addr.v` (identical to upstream verilog-axi) does not count a transaction
-  start in its decode-error branch but does count its completion, so `trans_count_reg`
-  underflows and the port stops accepting reads. The core can no longer trigger it (the
-  access check keeps unmapped addresses off the bus), but a future second bus master could.
-  The fix is one line (`trans_start = 1'b1` in the decode-error branch).
+* (Closed.) The verilog-axi crossbar, whose decode-error path under-counted transactions,
+  has been replaced by `RTL/axi_xbar.sv`. Unmapped addresses, empty slots and stores to
+  IMEM now reach the bus and come back as `DECERR` / `SLVERR`; the early access check in
+  `cache_system_top` is gone (docs/memory_map.md).
 * D-cache write-back (eviction) errors are ignored. That is unreachable today because DMEM
   never errors, and any error would be imprecise.
 * `mtvec` reads back the written value, but traps go to `{mtvec[31:8], 8'h00}`. BASE is WARL,

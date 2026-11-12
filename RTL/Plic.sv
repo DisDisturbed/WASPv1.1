@@ -1,25 +1,18 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// irq_src_i (flat [N_SRC-1:0]) is now irq_lines[N_SRC-1:0], an array of
-// irq_if.sink ports -- see irq_if.sv for why an array (not a single wide
-// interface) is the right shape here. Source 0 stays reserved/unused
-// exactly as before (pending_irq[0]/enable_irq[0]/priority_irq[0] are
-// still hard-zeroed below); irq_lines[0] is still wired up by whoever
-// instantiates this module, same as irq_src_i[0] always was, it's just
-// ignored internally.
+// Interrupt sources arrive as irq_lines[N_SRC-1:0], an array of irq_if.sink
+// ports (see Irq_if.sv for why an array). Source 0 is reserved:
+// pending_irq[0]/enable_irq[0]/priority_irq[0] are hard-zeroed below, and
+// irq_lines[0] is wired by the instantiating module but ignored here.
 //
-// The OBI bus side (req_i/gnt_o/rvalid_o/addr_i/we_i/strb_i/wdata_i/
-// rdata_o) is now a single obi_data_if.slave port, matching dcache's
-// conversion -- this is the leg cache_system_top's arbiter macro-wires
-// against core_data_bus, so PLIC no longer needs the plain-assign bridge
-// that was standing in for it.
+// The bus side is one obi_data_if.slave port: the PLIC leg of the core
+// data bus in cache_system_top.
 module plic
     import core_pkg::*;
 #(
     parameter int DATA_WIDTH = core_pkg::CORE_DATA_WIDTH,
-    parameter int N_SRC      = 32,          // number of interrupt sources (source 0 unused)
-    parameter logic [31:0] PLIC_BASE = 32'hC0002000  // informational; bus.addr arrives as an offset
+    parameter int N_SRC      = 32           // number of interrupt sources (source 0 unused)
 )(
     input  wire                   clk,
     input  wire                   rst_n,

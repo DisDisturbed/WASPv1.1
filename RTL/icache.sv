@@ -1,12 +1,10 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// instr_addr_i/instr_en_i/instr_gnt_o/instr_rvalid_o/instr_rdata_o
-// collapse into a single obi_instr_if.slave port. This is the slave side
-// of the same interface Core_Top exposes as instr_bus.master -- in
-// cache_system_top the two are connected to the SAME interface instance,
-// so this module needs no changes beyond the port declaration and
-// s/instr_*_i,o/instr_bus.*/ throughout the body.
+// Direct-mapped instruction cache: 64 lines of LINE_SIZE words.
+// Core side: OBI slave (the same obi_instr_if instance Core_Top drives).
+// Memory side: read-only AXI4 master, one INCR burst of LINE_SIZE words per
+// refill.
 module icache #(
     parameter int ADDR_WIDTH = 32,
     parameter int TAG_BITS   = ADDR_WIDTH - 12,
@@ -20,7 +18,7 @@ module icache #(
     parameter int          EXEC1_ADDR_WIDTH = 16
 )(
     input  wire        clk,
-    input  wire        rst,
+    input  wire        rst_n,
 
     // OBI instruction-memory slave port
     obi_instr_if.slave instr_bus,
@@ -28,13 +26,8 @@ module icache #(
     input  wire        flush_i,       // drop the in-flight request
     input  wire        invalidate_i,  // FENCE.I: invalidate every line (1 cycle)
 
-    output logic       m_axi_arvalid,
-    input  wire        m_axi_arready,
-    output wire [31:0] m_axi_araddr,
-    output logic [1:0] m_axi_arburst,
-
-    input  wire [31:0] m_axi_rdata,
-    input  wire        m_axi_rvalid
+    // AXI4 read master (refills)
+    axi_if.master_rd   m_axi
 );
 
     typedef enum logic [2:0] {
@@ -58,8 +51,8 @@ module icache #(
     wire exec_ok_w = ((req_addr_r >> EXEC0_ADDR_WIDTH) == (EXEC0_BASE >> EXEC0_ADDR_WIDTH)) ||
                      ((req_addr_r >> EXEC1_ADDR_WIDTH) == (EXEC1_BASE >> EXEC1_ADDR_WIDTH));
 
-    always_ff @(posedge clk) begin
-        if (rst) begin
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
             state_r       <= S_IDLE;
             req_addr_r    <= '0;
             refill_cnt_r  <= 4'd0;
@@ -77,14 +70,14 @@ module icache #(
             if (state_r == S_IDLE && instr_bus.req && !flush_i)
                 req_addr_r <= instr_bus.addr;
 
-            if (state_r == S_REFILL && m_axi_rvalid)
+            if (state_r == S_REFILL && m_axi.rvalid)
                 refill_cnt_r <= refill_cnt_r + 1;
             else if (state_r == S_IDLE || next_s == S_SEND_ADDR)
                 refill_cnt_r <= 4'd0;
 
-            if (state_r == S_REFILL && m_axi_rvalid &&
+            if (state_r == S_REFILL && m_axi.rvalid &&
                 refill_cnt_r == req_addr_r[5:2])
-                bypass_data_r <= m_axi_rdata;
+                bypass_data_r <= m_axi.rdata;
 
             if ((flush_i || redirect_w) && state_r inside {S_LOOKUP, S_SEND_ADDR, S_REFILL, S_SERVE})
                 suppress_r <= 1'b1;
@@ -125,8 +118,7 @@ module icache #(
         tag_wr_en      = 1'b0;
         tag_valid_in   = 1'b0;
         data_wr_en     = 1'b0;
-        m_axi_arvalid  = 1'b0;
-        m_axi_arburst  = 2'b01; // INCR
+        m_axi.arvalid  = 1'b0;
 
         unique case (state_r)
             S_IDLE: begin
@@ -159,13 +151,13 @@ module icache #(
             end
 
             S_SEND_ADDR: begin
-                m_axi_arvalid = 1'b1;
-                if (m_axi_arready)
+                m_axi.arvalid = 1'b1;
+                if (m_axi.arready)
                     next_s = S_REFILL;
             end
 
             S_REFILL: begin
-                if (m_axi_rvalid) begin
+                if (m_axi.rvalid) begin
                     data_wr_en = 1'b1;
                     if (refill_cnt_r == LINE_SIZE - 1) begin
                         tag_wr_en    = 1'b1;
@@ -190,7 +182,12 @@ module icache #(
         endcase
     end
 
-    assign m_axi_araddr = {req_addr_r[31:6], 6'b0};
+    assign m_axi.arid    = '0;
+    assign m_axi.araddr  = {req_addr_r[31:6], 6'b0};
+    assign m_axi.arlen   = 8'(LINE_SIZE - 1);
+    assign m_axi.arsize  = axi_pkg::AXI_SIZE_WORD;
+    assign m_axi.arburst = axi_pkg::AXI_BURST_INCR;
+    assign m_axi.rready  = 1'b1;
 
     icache_data_ram #(
         .line_amount(64),
@@ -201,7 +198,7 @@ module icache #(
         .data_req         (1'b1),
         .line_index_i     (active_line_w),
         .line_reg_index_i (active_word_w),
-        .data_i           (m_axi_rdata),
+        .data_i           (m_axi.rdata),
         .wr_i             (data_wr_en),
         .data_o           (ram_data_out)
     );
@@ -211,7 +208,7 @@ module icache #(
         .ADDR_WIDTH (ADDR_WIDTH)
     ) u_tag_ram (
         .clk_i          (clk),
-        .rst_i          (rst),
+        .rst_ni         (rst_n),
         .ins_addr_i     (active_tag_addr_w),
         .dirty_icache_in(1'b0),
         .valid_icache_in(tag_valid_in),

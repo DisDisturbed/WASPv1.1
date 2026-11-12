@@ -5,7 +5,8 @@
 #   make -C sim wave       -> FST waveform run in sim/active_test/ (see bottom)
 
 RTL  := ../RTL
-PKG  := $(RTL)/PGK_IF/core_pgk.sv $(RTL)/PGK_IF/obi_if.sv $(RTL)/PGK_IF/Irq_if.sv
+PKG  := $(RTL)/PGK_IF/core_pgk.sv $(RTL)/PGK_IF/axi_pkg.sv \
+        $(RTL)/PGK_IF/obi_if.sv $(RTL)/PGK_IF/Irq_if.sv $(RTL)/PGK_IF/axi_if.sv
 SRCS := $(PKG) \
         $(wildcard $(RTL)/*.sv) \
         $(wildcard $(RTL)/*.v) \

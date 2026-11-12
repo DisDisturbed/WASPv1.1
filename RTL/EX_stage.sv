@@ -3,16 +3,14 @@
 
 //  EX_stage
 //
-// Takes a single core_pkg::id_ex_bundle_t in and produces a single
-// core_pkg::ex_mem_bundle_t out, instead of ~20 individual ports on each
-// side. branch_dec now switches on branch_type_e values instead of raw
-// 3-bit literals, and trap causes use the named core_pkg constants.
+// core_pkg::id_ex_bundle_t in, core_pkg::ex_mem_bundle_t out. branch_dec
+// switches on branch_type_e, and trap causes use the named core_pkg
+// constants.
 
 module EX_stage
     import core_pkg::*;
 #(
-    parameter  int          DATA_WIDTH       = core_pkg::CORE_DATA_WIDTH,
-    parameter  int          REG_ADDR_WIDTH   = core_pkg::CORE_RF_ADDR_WIDTH
+    parameter  int          DATA_WIDTH       = core_pkg::CORE_DATA_WIDTH
 ) (
     input  wire                     clk,
     input  wire                     rst_n,
@@ -29,8 +27,6 @@ module EX_stage
     input  wire [DATA_WIDTH-1:0]    wb_forward_data_i,
 
     input   id_ex_bundle_t           id_ex_i,
-
-    output logic [DATA_WIDTH-1:0]   ex_combinational_res_o,
 
     output  ex_mem_bundle_t          ex_mem_o,
 
@@ -112,8 +108,6 @@ module EX_stage
         end
     end
 
-    logic div_by_zero;
-
     always_comb begin : trap_prop
         generated_trap_w       = id_ex_i.trap;
         generated_trap_cause_w = id_ex_i.trap_cause;
@@ -127,11 +121,8 @@ module EX_stage
                 generated_trap_cause_w = TRAP_CAUSE_ILLEGAL_INSTRUCTION;
             end
             // Division by zero is NOT an exception in RISC-V (M extension:
-            // DIV/DIVU x/0 = all ones, REM/REMU x/0 = x; MulDiv already
-            // returns that). The old custom cause-7 trap also used the
-            // sticky div_by_zero_o without checking is_muldiv, so every
-            // instruction after an x/0 was "trapped" and lost its
-            // writeback until the next MUL/DIV started.
+            // DIV/DIVU x/0 = all ones, REM/REMU x/0 = x; MulDiv returns
+            // that), so MulDiv's div_by_zero_o does not raise a trap here.
         end
     end
 
@@ -161,7 +152,7 @@ module EX_stage
         .carry_flag    (alu_carry_w)
     );
 
-     logic muldiv_busy_w, muldiv_done_w, muldiv_div_zero_w;
+     logic muldiv_busy_w, muldiv_done_w;
 logic [DATA_WIDTH-1:0] muldiv_result_w;
 logic muldiv_start_w;
 logic [DATA_WIDTH-1:0] muldiv_res_w;
@@ -169,7 +160,6 @@ logic [DATA_WIDTH-1:0] muldiv_res_w;
 assign muldiv_start_w = id_ex_i.is_muldiv & ~muldiv_busy_w & ~muldiv_done_w & ~flush_i;
 
 assign ex_busy_o = id_ex_i.is_muldiv & ~muldiv_done_w;
-assign div_by_zero  = muldiv_div_zero_w;
 assign muldiv_res_w = muldiv_result_w;
 
 MulDiv #(.DATA_WIDTH(DATA_WIDTH)) muldiv_inst (
@@ -179,12 +169,8 @@ MulDiv #(.DATA_WIDTH(DATA_WIDTH)) muldiv_inst (
     .operand_a_i(alu_mux_a_val),
     .operand_b_i(forward_mux_b_val),
     .busy_o(muldiv_busy_w), .done_o(muldiv_done_w),
-    .result_o(muldiv_result_w), .div_by_zero_o(muldiv_div_zero_w)
+    .result_o(muldiv_result_w), .div_by_zero_o()
 );
-
-
-     logic mul_div_control_mux;
-     assign mul_div_control_mux = muldiv_done_w;
 
 
     always_comb begin : dp_res_mux

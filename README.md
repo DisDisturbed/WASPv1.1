@@ -328,8 +328,8 @@ Simulation speed: fast model ≈ 1 M cycles/s; the waveform model is much slower
    ```sh
    cp sw/build/wasp/sphincs_128f_hwrng/imem.mem sw/build/wasp/sphincs_128f_hwrng/dmem.mem RTL/
    ```
-   (`RTL/imem.mem` → instruction BRAM `icache_test_ins_mem`, `RTL/dmem.mem` →
-   data BRAM `dcache_test_data_mem`.)
+   (`RTL/imem.mem` → instruction BRAM `u_ins_ram`, `RTL/dmem.mem` → data BRAM
+   `u_data_ram`; both are `axi_ram` instances in `System_top`.)
 3. Re-run synthesis/implementation in Vivado and program the board.
 4. Talk to it over the serial port (115200 8N1, needs `pip install pyserial`):
    ```sh

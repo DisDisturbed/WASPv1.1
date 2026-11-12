@@ -2,25 +2,28 @@
 `default_nettype none
 
 //  hazard_unit
-//         priority :
+//         stall / flush priority :
 //          1. lsu_busy    absolute freeze no redirect may override a live
 //                         memory transaction
-//          2. trap/mret   flush ID and redirect PC; pipeline was clean
+//          2. mem_exc     exception raised in EX/MEM: flush IF/ID/EX
 //          3. branch      flush IF/ID/EX and redirect PC
 //          4. jump        flush IF/ID/EX and redirect PC
 //                         branches and jump are same
-//          5. if_busy     I-cache miss stall IF, insert NOP into IF/ID
-//          6. ex_busy     multi-cycle ALU stall IF+ID
+//          5. ex_busy     multi-cycle MUL/DIV stall IF+ID
+//          6. trap/mret   taken in ID: flush ID and redirect PC
 //          7. load_use    raw stall stall IF, bubble ID
 //
-// pc_mux_o / exc_pc_mux_o now carry core_pkg's pc_mux_sel_e / exc_pc_mux_e
-// types directly instead of raw [3:0]/[2:0] -- this was previously the
-// other of the two places (with IF_stage) that hand-copied the same
-// encoding as raw localparams; see core_pkg.sv header.
+// A trap/mret is only taken in ID when none of 1-5 is active (ID_stage
+// gates trap_take with !stall_id and !id_kill, and id_kill covers 2-5), so
+// its place in the chain does not change what happens. It sits below
+// ex_busy so that stall_id does not depend on trap_take: trap_take depends
+// on stall_id, and the other order is a combinational loop.
 //
-// Forwarding/hazard detection now reads directly from the id_ex/ex_mem/
-// mem_wb pipeline bundles instead of ~15 individually-named ports per
-// stage boundary.
+// pc_mux_o / exc_pc_mux_o carry core_pkg's pc_mux_sel_e / exc_pc_mux_e,
+// the same types IF_stage consumes.
+//
+// Forwarding and hazard detection read the id_ex / ex_mem / mem_wb
+// pipeline bundles directly.
 
 module hazard_unit
     import core_pkg::*;
@@ -33,8 +36,6 @@ module hazard_unit
     input  wire [RF_ADDR_WIDTH-1:0] id_rs1_addr_i,
     input  wire [RF_ADDR_WIDTH-1:0] id_rs2_addr_i,
 
-    input  wire                     id_is_branch_i,
-    input  wire                     id_jalr_i,
     input  wire                     id_csr_read_i,       // CSR instr or MRET (reads mepc) in ID
     input  wire                     id_cnt_read_i,       // CSR instr in ID reads minstret/instret(h)
     input  wire                     id_trap_req_i,       // ID wants to trap / take irq / mret
@@ -47,7 +48,6 @@ module hazard_unit
 
     input  wire                     ex_busy_i,           // multi-cycle ALU
     input  wire                     lsu_busy_i,          // data-memory transaction
-    input  wire                     if_busy_i,           // I-cache miss
 
     input  wire                     trap_take_i,
     input  wire                     mret_take_i,
@@ -64,12 +64,9 @@ module hazard_unit
     output logic                    stall_id_o,
     output logic                    stall_ex_o,
     output logic                    stall_mem_o,
-    output logic                    stall_wb_o,
     output logic                    flush_if_o,
     output logic                    flush_id_o,
     output logic                    flush_ex_o,
-    output logic                    flush_mem_o,
-    output logic                    flush_wb_o,
 
     output logic                    trap_redirect_accepted_o,
 
@@ -141,17 +138,17 @@ module hazard_unit
                             (id_ex_i.valid || ex_mem_i.valid || mem_wb_i.valid);
 
     // Wrong-path kill: when EX/MEM redirects, the instruction in ID is on
-    // the wrong path. Before this, trap_take (incl. interrupts) had priority
-    // over the redirect, so an IRQ arriving in that cycle saved the
-    // wrong-path PC in mepc and the branch/jump was silently lost (and a
-    // wrong-path illegal word, e.g. 0x0 padding after a `ret`, trapped).
+    // the wrong path and must not act. Otherwise an IRQ arriving in that
+    // cycle would save the wrong-path PC in mepc and the branch/jump would
+    // be silently lost (and a wrong-path illegal word, e.g. 0x0 padding
+    // after a `ret`, would trap).
     //
     // Trap hold: a branch/jump that is in EX right now resolves (and may
     // redirect + flush EX) next cycle. A trap/irq/mret taken in ID this
     // cycle would be flushed out of EX by that redirect, its PC redirect
     // overridden, and trap_in_flight would never clear (irqs masked for
     // good). So ID waits one cycle until the older control flow resolves.
-    // Same while a multi-cycle MUL/DIV is busy in EX: trap priority used to
+    // Same while a multi-cycle MUL/DIV is busy in EX: trap priority would
     // beat the ex_busy stall, the trap bubble overwrote id_ex mid-operation
     // and the MUL/DIV result was lost.
     logic ex_ctrl_flow, trap_hold;
@@ -206,12 +203,9 @@ module hazard_unit
         stall_id_o  = 1'b0;
         stall_ex_o  = 1'b0;
         stall_mem_o = 1'b0;
-        stall_wb_o  = 1'b0;
         flush_if_o  = 1'b0;
         flush_id_o  = 1'b0;
         flush_ex_o  = 1'b0;
-        flush_mem_o = 1'b0;
-        flush_wb_o  = 1'b0;
 
 
         if (lsu_busy_i) begin
@@ -227,21 +221,18 @@ module hazard_unit
             flush_id_o = 1'b1;
             flush_ex_o = 1'b1;
 
-        end else if (trap_take_i || mret_take_i) begin
-            flush_id_o = 1'b1;
-
         end else if (branch_decision_i || ex_redirect) begin
             flush_if_o = 1'b1;
             flush_id_o = 1'b1;
             flush_ex_o = 1'b1;
 
-        end else if (if_busy_i) begin
-            stall_if_o = 1'b1;
-            flush_if_o = 1'b1;
-
         end else if (ex_busy_i) begin
             stall_if_o = 1'b1;
             stall_id_o = 1'b1;
+
+        end else if (trap_take_i || mret_take_i) begin
+            // never together with the branches above (see header)
+            flush_id_o = 1'b1;
 
         end else if (load_use_stall || id_hold) begin
             stall_if_o = 1'b1;
@@ -274,9 +265,12 @@ module hazard_unit
                          $time);
             end
 
-            if (if_busy_i && (branch_decision_i || ex_redirect_jump)) begin
-                $display("HAZARD WARN  @ %0t: if_busy and branch/jump simultaneously - redirect wins",
+            // the stall/flush chain relies on this (see header)
+            if ((trap_take_i || mret_take_i) &&
+                (lsu_busy_i || mem_exc_i || branch_decision_i || ex_redirect || ex_busy_i)) begin
+                $display("HAZARD FATAL @ %0t: trap/mret taken in ID together with freeze/redirect/ex_busy",
                          $time);
+                $stop;
             end
 
         end

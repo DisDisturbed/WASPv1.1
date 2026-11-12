@@ -6,23 +6,17 @@
 //
 // OBI-lite bus interfaces.
 //
-// These are real SystemVerilog interfaces with modports, UNLIKE the
-// id_ex/ex_mem/mem_wb packed structs in core_pkg. The reasoning is the
-// inverse of the one that kept the pipeline bundles as plain structs: the
-// thing on the other end of instr_bus / data_bus is not a fixed neighbor.
-// In simulation it is a simple single-cycle BRAM model; on real hardware it
-// might be a Vivado AXI<->OBI bridge, an instruction cache, or a shared bus
-// fabric with other masters behind it. Multiple possible, interchangeable
-// connectees implementing the same request/grant/response contract is
-// exactly the case a modport exists for, so each side (core-as-master,
-// memory-as-slave) gets one.
+// Real SystemVerilog interfaces with modports, unlike the pipeline bundles
+// in core_pkg, which are plain structs. A pipeline stage always has the
+// same fixed neighbour; the thing on the other end of instr_bus / data_bus
+// is not fixed: the I-cache or D-cache, the PLIC, the CLINT, a simulation
+// memory model. Several interchangeable connectees implementing the same
+// request/grant/response contract is the case a modport exists for, so
+// each side (master, slave) gets one.
 //
-// Two separate interfaces rather than one generic parameterized one,
-// because the instruction channel in this core is genuinely read-only --
-// there is no we/be/wdata anywhere on the instruction OBI path in the RTL
-// being converted. Giving obi_instr_if write signals it can never use
-// would just be dead ports pretending to be part of a real contract, which
-// is the same trap core_pkg's header warns against for alu_ctrl/mem_ctrl.
+// Two interfaces, not one generic parameterized one, because the
+// instruction channel is read-only: there is no we/be/wdata anywhere on
+// the instruction path, and obi_instr_if does not carry them.
 // =============================================================================
 
 interface obi_instr_if #(

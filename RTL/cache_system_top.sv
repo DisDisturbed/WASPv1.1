@@ -18,83 +18,23 @@ module cache_system_top #(
     parameter     DCACHE_FLUSH_ADDR = 32'hC0003000, // D-cache flush control register
     parameter     DMEM_BASE  = 32'h80000000,   // only DMEM is D-cacheable
     parameter int DMEM_ADDR_WIDTH = 16,        // DMEM size = 2**DMEM_ADDR_WIDTH bytes
-    // rest of the memory map, for the access-fault check (System_top passes these)
-    parameter     IMEM_BASE  = 32'h40000000,   // read-only for data accesses
+    parameter     IMEM_BASE  = 32'h40000000,   // executable, together with DMEM
     parameter int IMEM_ADDR_WIDTH = 16,
-    parameter     UART_BASE  = 32'hC0000000,   // 4 KB page
-    parameter     SLOT3_BASE = 32'hC0004000,   // spare AXI pages
-    parameter     SLOT4_BASE = 32'hC0005000,
-    parameter     SLOT5_BASE = 32'hC0006000,
-    // bit n-3 = a slave is attached to crossbar slot n. Without one, an
-    // access would never get an AXI response and hang the core, so it is
-    // answered with an access fault instead.
-    parameter logic [2:0] SLOT_PRESENT = 3'b000,
-    parameter int CLK_FREQ_HZ = 50_000_000     // core clock (clk_wiz_0 clk_out1)
+    parameter int CLK_FREQ_HZ = 50_000_000     // frequency of clk (clk_wiz_0 clk_out1)
 )(
-    input wire clk_100mhz_in,
-    input wire rst_in_n,
-    output logic clk_o,
-    output logic rst_o,
+    input wire clk,
+    input wire rst_n,     // active low, asynchronous
 
     input wire [DATA_WIDTH-1:0] boot_addr_in,
     input wire [N_SRC-1:0] plic_irq_i,
 
-    // Instruction Cache AXI4 Read Interface (to external I-memory)
-    output logic        icache_m_axi_arvalid,
-    input  wire         icache_m_axi_arready,
-    output logic [31:0] icache_m_axi_araddr,
-    output logic [1:0]  icache_m_axi_arburst,
-    input  wire         icache_m_axi_rvalid,
-    input  wire  [31:0] icache_m_axi_rdata,
-
-    // Data Cache AXI4 Full Interface (to external interconnect/memory)
-    // Write Address Channel
-    output logic        dcache_m_axi_awvalid,
-    input  wire         dcache_m_axi_awready,
-    output logic [31:0] dcache_m_axi_awaddr,
-    output logic [3:0]  dcache_m_axi_awid,
-    output logic [7:0]  dcache_m_axi_awlen,
-    output logic [2:0]  dcache_m_axi_awsize,
-    output logic [1:0]  dcache_m_axi_awburst,
-    // Write Data Channel
-    output logic        dcache_m_axi_wvalid,
-    input  wire         dcache_m_axi_wready,
-    output logic [31:0] dcache_m_axi_wdata,
-    output logic [3:0]  dcache_m_axi_wstrb,
-    output logic        dcache_m_axi_wlast,
-    // Write Response Channel
-    input  wire         dcache_m_axi_bvalid,
-    output logic        dcache_m_axi_bready,
-    input  wire  [1:0]  dcache_m_axi_bresp,
-    input  wire  [3:0]  dcache_m_axi_bid,
-    // Read Address Channel
-    output logic        dcache_m_axi_arvalid,
-    input  wire         dcache_m_axi_arready,
-    output logic [31:0] dcache_m_axi_araddr,
-    output logic [3:0]  dcache_m_axi_arid,
-    output logic [7:0]  dcache_m_axi_arlen,
-    output logic [2:0]  dcache_m_axi_arsize,
-    output logic [1:0]  dcache_m_axi_arburst,
-    // Read Data Channel
-    input  wire         dcache_m_axi_rvalid,
-    output logic        dcache_m_axi_rready,
-    input  wire  [31:0] dcache_m_axi_rdata,
-    input  wire         dcache_m_axi_rlast,
-    input  wire  [1:0]  dcache_m_axi_rresp,
-    input  wire  [3:0]  dcache_m_axi_rid,
+    // AXI4 masters towards the crossbar
+    axi_if.master_rd icache_axi,   // I-cache refills (read only)
+    axi_if.master    dcache_axi,   // D-cache refill / write-back / bypass
 
     // Debug/monitoring outputs
     output logic mie_o_tb
 );
-
-
-    logic rst_n;
-    assign rst_o = rst_n;
-
-    // Flush redirect signal for dropping inline request
-    // Current caches don't request that so this version is safe
-    logic        core_pipeline_flush;
-    assign       core_pipeline_flush = 1'b0;
 
     logic plic_ext_irq;
     logic clint_timer_irq;
@@ -108,8 +48,8 @@ module cache_system_top #(
     obi_instr_if #(.DATA_WIDTH(DATA_WIDTH), .ADDR_WIDTH(DATA_WIDTH)) instr_bus();
 
     // =========================================================================
-    // Core <-> data bus: one master interface from the core, arbitrated
-    // between two slave legs (dcache, PLIC). See obi_macros.svh.
+    // Core <-> data bus: one master interface from the core, split over
+    // three slave legs (D-cache, PLIC, CLINT). See obi_macros.svh.
     // =========================================================================
     obi_data_if #(.DATA_WIDTH(DATA_WIDTH), .ADDR_WIDTH(DATA_WIDTH)) core_data_bus();
     obi_data_if #(.DATA_WIDTH(DATA_WIDTH), .ADDR_WIDTH(DATA_WIDTH)) dcache_bus();
@@ -124,10 +64,8 @@ module cache_system_top #(
         .DATA_WIDTH(DATA_WIDTH),
         .RF_ADDR_WIDTH(RF_ADDR_WIDTH)
     ) u_core (
-        .clk_in         (clk_100mhz_in),
-        .ext_rst_n      (rst_in_n),
-        .clk_o          (clk_o),
-        .rst_o          (rst_n),
+        .clk            (clk),
+        .rst_n          (rst_n),
         .boot_addr_i    (boot_addr_in),
         .external_irq_i (plic_ext_irq),
         .timer_irq_i    (clint_timer_irq),
@@ -145,17 +83,18 @@ module cache_system_top #(
     );
 
     // =========================================================================
-    // PLIC Address Decoder and Arbitration (OBI interface)
-    // PLIC is accessed before D-cache, so it stays in this module.
+    // Core data bus decode: PLIC, CLINT, or the D-cache.
     //
-    // Outstanding-transaction tracking is unchanged design logic: it stops
-    // an in-flight transaction from being reassigned to the other slave if
-    // the requested address changes mid-flight. Only the field-level
-    // wiring below it is now expressed via the OBI_DATA_* macros.
+    // PLIC and CLINT each own one 4 KB page and are answered here, before
+    // the D-cache. Everything else goes to the D-cache, which caches DMEM
+    // and passes all other addresses on to the AXI crossbar. Accesses the
+    // bus cannot serve (no slave at the address, a store to the read-only
+    // IMEM, an empty spare slot) come back from there as an AXI error
+    // response, which the D-cache reports as err (load/store access fault).
+    //
+    // outstanding_tx / active_slave keep a transaction on the leg it started
+    // on if the requested address changes while it is in flight.
     // =========================================================================
-    // Range decode: PLIC and CLINT each own one 4 KB page. Anything else
-    // goes to the D-cache (which bypasses non-DMEM addresses straight to
-    // the AXI crossbar).
     localparam logic [31:0] PLIC_SIZE  = 32'h0000_1000;
     localparam logic [31:0] CLINT_SIZE = 32'h0000_1000;
 
@@ -163,43 +102,14 @@ module cache_system_top #(
     assign sel_plic  = (core_data_bus.addr >= PLIC_BASE)  && (core_data_bus.addr < PLIC_BASE  + PLIC_SIZE);
     assign sel_clint = (core_data_bus.addr >= CLINT_BASE) && (core_data_bus.addr < CLINT_BASE + CLINT_SIZE);
 
-    // ---- access check (load/store access fault) --------------------------
-    // Everything the D-cache leg can actually serve. Anything else is
-    // answered by the error leg (gnt+rvalid+err in the same cycle, no bus
-    // transaction): an unmapped address would otherwise get an AXI decode
-    // error, which the vendored crossbar mis-counts and then stops
-    // accepting reads; a store to IMEM or an access to an empty slot would
-    // never be answered at all.
-    function automatic logic in_page(input logic [31:0] a, input logic [31:0] base);
-        return (a >> 12) == (base >> 12);
-    endfunction
-    logic [31:0] d_addr;
-    logic        d_we;
-    assign d_addr = core_data_bus.addr;
-    assign d_we   = core_data_bus.we;
-
-    logic dcache_ok;
-    assign dcache_ok =
-          ((d_addr >> DMEM_ADDR_WIDTH) == (DMEM_BASE >> DMEM_ADDR_WIDTH))            // DMEM  R/W
-       || (((d_addr >> IMEM_ADDR_WIDTH) == (IMEM_BASE >> IMEM_ADDR_WIDTH)) && !d_we) // IMEM  read only
-       ||  in_page(d_addr, UART_BASE)                                                 // UART  R/W
-       || ((d_addr == DCACHE_FLUSH_ADDR) && d_we)                                     // flush write only
-       || (in_page(d_addr, SLOT3_BASE) && SLOT_PRESENT[0])
-       || (in_page(d_addr, SLOT4_BASE) && SLOT_PRESENT[1])
-       || (in_page(d_addr, SLOT5_BASE) && SLOT_PRESENT[2]);
-
-    logic sel_err;
-    assign sel_err = !sel_plic && !sel_clint && !dcache_ok;
-
-    typedef enum logic [1:0] { SLAVE_DCACHE, SLAVE_PLIC, SLAVE_CLINT, SLAVE_ERR } slave_e;
+    typedef enum logic [1:0] { SLAVE_DCACHE, SLAVE_PLIC, SLAVE_CLINT } slave_e;
     slave_e active_slave, req_slave;
     logic [3:0] outstanding_tx;
 
     assign req_slave = sel_plic  ? SLAVE_PLIC  :
-                       sel_clint ? SLAVE_CLINT :
-                       sel_err   ? SLAVE_ERR   : SLAVE_DCACHE;
+                       sel_clint ? SLAVE_CLINT : SLAVE_DCACHE;
 
-    always_ff @(posedge clk_o or negedge rst_n) begin
+    always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             outstanding_tx <= '0;
             active_slave   <= SLAVE_DCACHE;
@@ -217,39 +127,31 @@ module cache_system_top #(
     logic allow_req;
     assign allow_req = (outstanding_tx == 0) || (active_slave == req_slave);
 
-    // dcache leg: pure broadcast + gate, fully mechanical -> macros.
+    // dcache leg: broadcast + gated request
     `OBI_DATA_BROADCAST_AP(dcache_bus, core_data_bus)
-    `OBI_DATA_GATE_REQ(dcache_bus, core_data_bus, (~sel_plic & ~sel_clint & ~sel_err & allow_req))
+    `OBI_DATA_GATE_REQ(dcache_bus, core_data_bus, (~sel_plic & ~sel_clint & allow_req))
 
-    // plic leg: we/be/wdata are a plain broadcast (macro-able), but addr
-    // needs the PLIC_BASE offset subtracted -- that's real per-leg
-    // address-decode logic, not mechanical wiring, so it's written out
-    // instead of forced through OBI_DATA_BROADCAST_AP.
+    // plic leg: the PLIC expects the offset from PLIC_BASE, so addr is
+    // written out instead of using OBI_DATA_BROADCAST_AP
     assign plic_bus.we    = core_data_bus.we;
     assign plic_bus.be    = core_data_bus.be;
     assign plic_bus.wdata = core_data_bus.wdata;
-    assign plic_bus.addr  = core_data_bus.addr - PLIC_BASE; // PLIC expects offset from base
+    assign plic_bus.addr  = core_data_bus.addr - PLIC_BASE;
     `OBI_DATA_GATE_REQ(plic_bus, core_data_bus, (sel_plic & allow_req))
 
     // clint leg: same shape as the plic leg
     assign clint_bus.we    = core_data_bus.we;
     assign clint_bus.be    = core_data_bus.be;
     assign clint_bus.wdata = core_data_bus.wdata;
-    assign clint_bus.addr  = core_data_bus.addr - CLINT_BASE; // CLINT expects offset from base
+    assign clint_bus.addr  = core_data_bus.addr - CLINT_BASE;
     `OBI_DATA_GATE_REQ(clint_bus, core_data_bus, (sel_clint & allow_req))
 
-    // error leg: answers in the request cycle
-    logic err_resp;
-    assign err_resp = core_data_bus.req && sel_err && allow_req;
-
     assign core_data_bus.gnt    = allow_req ? (sel_plic  ? plic_bus.gnt  :
-                                               sel_clint ? clint_bus.gnt :
-                                               sel_err   ? 1'b1          : dcache_bus.gnt) : 1'b0;
-    assign core_data_bus.rvalid = plic_bus.rvalid | clint_bus.rvalid | dcache_bus.rvalid | err_resp;
+                                               sel_clint ? clint_bus.gnt : dcache_bus.gnt) : 1'b0;
+    assign core_data_bus.rvalid = plic_bus.rvalid | clint_bus.rvalid | dcache_bus.rvalid;
     assign core_data_bus.rdata  = plic_bus.rvalid  ? plic_bus.rdata  :
-                                  clint_bus.rvalid ? clint_bus.rdata :
-                                  err_resp         ? '0              : dcache_bus.rdata;
-    assign core_data_bus.err    = err_resp | (dcache_bus.rvalid & dcache_bus.err);
+                                  clint_bus.rvalid ? clint_bus.rdata : dcache_bus.rdata;
+    assign core_data_bus.err    = dcache_bus.rvalid & dcache_bus.err;
 
     // =========================================================================
     // CLINT Instance (mtime/mtimecmp/msip + clk_freq/prescaler, see Clint.sv)
@@ -258,7 +160,7 @@ module cache_system_top #(
         .DATA_WIDTH  (DATA_WIDTH),
         .CLK_FREQ_HZ (CLK_FREQ_HZ)
     ) u_clint (
-        .clk         (clk_o),
+        .clk         (clk),
         .rst_n       (rst_n),
         .bus         (clint_bus),
         .timer_irq_o (clint_timer_irq),
@@ -269,13 +171,10 @@ module cache_system_top #(
     // =========================================================================
     // PLIC Instance
     //
-    // Each interrupt source gets its own irq_if instance; which array slot
-    // a given peripheral lands in is fixed at elaboration time (this
-    // generate loop), so -- unlike the OBI data-bus arbitration above --
-    // an interface array is exactly the right tool here, no macro needed.
-    // plic_irq_i itself stays a flat vector: it's this module's own
-    // outward-facing chip/SoC-level boundary, same reasoning as keeping
-    // Core_Top's board-level ports flat one level up.
+    // One irq_if instance per interrupt source. Which array slot a source
+    // lands in is fixed at elaboration time, so a plain interface array
+    // fits. plic_irq_i stays a flat vector: it is this module's boundary
+    // towards the board.
     // =========================================================================
     irq_if irq_lines [N_SRC-1:0] ();
 
@@ -285,10 +184,9 @@ module cache_system_top #(
 
     plic #(
         .DATA_WIDTH(DATA_WIDTH),
-        .N_SRC(N_SRC),
-        .PLIC_BASE(PLIC_BASE)
+        .N_SRC(N_SRC)
     ) u_plic (
-        .clk            (clk_o),
+        .clk            (clk),
         .rst_n          (rst_n),
         .irq_lines      (irq_lines),
 
@@ -308,28 +206,22 @@ module cache_system_top #(
         .EXEC1_BASE       (DMEM_BASE),
         .EXEC1_ADDR_WIDTH (DMEM_ADDR_WIDTH)
     ) u_icache (
-        .clk            (clk_o),
-        .rst            (!rst_n),   // icache expects active-high reset
+        .clk            (clk),
+        .rst_n          (rst_n),
 
         // Core OBI -- same interface instance Core_Top drives as master
         .instr_bus      (instr_bus),
         // FENCE.I: once the D-cache write-back is done (fencei_done), drop
         // the in-flight fetch and invalidate every line in the same cycle
         // the core redirects to pc+4
-        .flush_i        (core_pipeline_flush | fencei_done),
+        .flush_i        (fencei_done),
         .invalidate_i   (fencei_done),
 
-        // AXI4 Read only (exposed to top level)
-        .m_axi_arvalid  (icache_m_axi_arvalid),
-        .m_axi_arready  (icache_m_axi_arready),
-        .m_axi_araddr   (icache_m_axi_araddr),
-        .m_axi_arburst  (icache_m_axi_arburst),
-        .m_axi_rdata    (icache_m_axi_rdata),
-        .m_axi_rvalid   (icache_m_axi_rvalid)
+        .m_axi          (icache_axi)
     );
 
     // =========================================================================
-    // Data Cache (OBI on core side, AXI4 Full on memory side)
+    // Data Cache (OBI on core side, AXI4 on memory side)
     // =========================================================================
     dcache #(
         .ADDR_WIDTH        (32),
@@ -342,49 +234,17 @@ module cache_system_top #(
         .CACHE_RANGE_LOWER (DMEM_BASE),
         .CACHE_RANGE_UPPER (DMEM_BASE + (32'd1 << DMEM_ADDR_WIDTH) - 32'd1)
     ) u_dcache (
-        .clk            (clk_o),
-        .rst            (!rst_n),
+        .clk            (clk),
+        .rst_n          (rst_n),
 
-        // Core side OBI -- this leg of the arbiter
+        // Core side OBI -- the D-cache leg of the core data bus
         .core_bus       (dcache_bus),
         .flush_all_req_i  (fencei_req),
         .flush_all_done_o (fencei_done),
 
-        // AXI4 Full interface (exposed to top level)
-        // Write Address Channel
-        .m_axi_awvalid  (dcache_m_axi_awvalid),
-        .m_axi_awready  (dcache_m_axi_awready),
-        .m_axi_awaddr   (dcache_m_axi_awaddr),
-        .m_axi_awid     (dcache_m_axi_awid),
-        .m_axi_awlen    (dcache_m_axi_awlen),
-        .m_axi_awsize   (dcache_m_axi_awsize),
-        .m_axi_awburst  (dcache_m_axi_awburst),
-        // Write Data Channel
-        .m_axi_wvalid   (dcache_m_axi_wvalid),
-        .m_axi_wready   (dcache_m_axi_wready),
-        .m_axi_wdata    (dcache_m_axi_wdata),
-        .m_axi_wstrb    (dcache_m_axi_wstrb),
-        .m_axi_wlast    (dcache_m_axi_wlast),
-        // Write Response Channel
-        .m_axi_bvalid   (dcache_m_axi_bvalid),
-        .m_axi_bready   (dcache_m_axi_bready),
-        .m_axi_bresp    (dcache_m_axi_bresp),
-        .m_axi_bid      (dcache_m_axi_bid),
-        // Read Address Channel
-        .m_axi_arvalid  (dcache_m_axi_arvalid),
-        .m_axi_arready  (dcache_m_axi_arready),
-        .m_axi_araddr   (dcache_m_axi_araddr),
-        .m_axi_arid     (dcache_m_axi_arid),
-        .m_axi_arlen    (dcache_m_axi_arlen),
-        .m_axi_arsize   (dcache_m_axi_arsize),
-        .m_axi_arburst  (dcache_m_axi_arburst),
-        // Read Data Channel
-        .m_axi_rvalid   (dcache_m_axi_rvalid),
-        .m_axi_rready   (dcache_m_axi_rready),
-        .m_axi_rdata    (dcache_m_axi_rdata),
-        .m_axi_rlast    (dcache_m_axi_rlast),
-        .m_axi_rresp    (dcache_m_axi_rresp),
-        .m_axi_rid      (dcache_m_axi_rid)
+        .m_axi          (dcache_axi)
     );
 
 endmodule
+
+`default_nettype wire

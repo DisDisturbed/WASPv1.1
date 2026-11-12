@@ -1,9 +1,7 @@
 `timescale 1ns / 1ps
 `default_nettype none
-// alu_control_i encoding intentionally stays a raw vector, not a core_pkg
-// This module's own case statement is ALU's actual source of truth for the
-// encoding; putting a guessed enum in core_pkg would risk a second, wrong
-// definition instead of preventing a duplicate one.
+// alu_control_i stays a raw vector, not a core_pkg enum: the case statement
+// in this module is the source of truth for the encoding.
 module Alu #(
     parameter DATA_WIDTH = core_pkg::CORE_DATA_WIDTH,
     parameter CONTROL_WIDTH = 4

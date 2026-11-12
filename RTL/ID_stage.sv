@@ -3,18 +3,14 @@
 
 //  ID_stage
 //
-// Outputs a single core_pkg::id_ex_bundle_t instead of the ~25 individual
-// id_ex_*_o ports this module used to have -- the bundle is a field-for-
-// field match to what those ports used to be (see core_pkg.sv), so this is
-// a mechanical port-list collapse, not a behavior change. Trap causes use
-// the named core_pkg constants instead of raw 6-bit literals.
+// Outputs one core_pkg::id_ex_bundle_t. Trap causes use the named
+// core_pkg constants.
 
 module ID_stage
     import core_pkg::*;
 #(
     parameter int DATA_WIDTH = core_pkg::CORE_DATA_WIDTH,
-    parameter int RF_ADDR_WIDTH = core_pkg::CORE_RF_ADDR_WIDTH,
-    parameter int INSTR_TYPE_WIDTH = 3
+    parameter int RF_ADDR_WIDTH = core_pkg::CORE_RF_ADDR_WIDTH
 )(
     input wire clk,
     input wire rst_n,
@@ -37,16 +33,12 @@ module ID_stage
     input  wire                   soft_irq_i,       // CLINT msip
 
     input  wire [DATA_WIDTH-1:0]  csr_rdata_i,
-    input  wire [DATA_WIDTH-1:0]  csr_mtvec_i,
-    input  wire [DATA_WIDTH-1:0]  csr_mepc_i,
     input  wire                   csr_mie_i,
     input  wire [DATA_WIDTH-1:0]  csr_mie_regs_i,
 
     output logic                  trap_req_o,       // ID wants to trap/irq/mret (ungated)
     output logic                  trap_take_o,
-    output logic [DATA_WIDTH-1:0] trap_target_pc_o,
     output logic                  mret_take_o,
-    output logic [DATA_WIDTH-1:0] mret_target_pc_o,
 
     output id_ex_bundle_t         id_ex_o
 );
@@ -62,7 +54,7 @@ module ID_stage
     logic [3:0]  alu_ctrl_w;
     branch_type_e branch_type_w;
     logic        is_branch_w, is_jump_w, jalr_w;
-    logic        is_muldiv_w, is_mul_w, is_div_w;
+    logic        is_muldiv_w;
     logic [2:0]  muldiv_ctrl_w, mem_ctrl_w;
     logic        is_load_w, is_store_w;
     wb_sel_e     wb_ctrl_w;
@@ -90,8 +82,6 @@ module ID_stage
         .jalr_o          (jalr_w),
         .is_muldiv_o     (is_muldiv_w),
         .muldiv_ctrl_o   (muldiv_ctrl_w),
-        .is_mul_o        (is_mul_w),
-        .is_div_o        (is_div_w),
         .mem_ctrl_o      (mem_ctrl_w),
         .is_load_o       (is_load_w),
         .is_store_o      (is_store_w),
@@ -171,9 +161,6 @@ module ID_stage
             endcase
         end
     end
-
-    assign trap_target_pc_o = csr_mtvec_i;
-    assign mret_target_pc_o = csr_mepc_i;
 
     logic       generated_trap_w;
     logic [5:0] generated_trap_cause_w;

@@ -3,11 +3,9 @@
 // this is an ff based reg file
 // has internal forwarding
 //
-// Not converted to use core_pkg types beyond the default widths: this
-// module carries no encoding (no opcodes, no mux selects) that could ever
-// drift out of sync with another module, which is the only problem
-// core_pkg exists to solve. Forcing an import here would be ceremony
-// without benefit.
+// Uses core_pkg only for the default widths: this module carries no
+// encoding (no opcodes, no mux selects) that another module has to agree
+// with.
 module register_file #(
        parameter DATA_WIDTH = core_pkg::CORE_DATA_WIDTH,
        parameter ADDR_WIDTH = core_pkg::CORE_RF_ADDR_WIDTH // if fpu it need to be 6

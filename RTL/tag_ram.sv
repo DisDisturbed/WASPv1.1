@@ -9,7 +9,7 @@ module icache_tag_ram #(
 (
     // In
     input   wire   clk_i,
-    input   wire rst_i,
+    input   wire rst_ni,   // active low, asynchronous
     input   wire  [ADDR_WIDTH-1:0]  ins_addr_i,
     input   wire dirty_icache_in,  //unused for now here for cache coherency drive them on the port declartion critical !!!!!
     input   wire valid_icache_in,  //unused for now here for cache coherency
@@ -39,25 +39,26 @@ module icache_tag_ram #(
     reg [DATA_WIDTH - 1: 0] ram_read_q;
     
     
-    //valid to reset used because brams cant reset in one clk cycle and using 1k ff doesnt makes sense 
+    // Only the valid bits and the read register are reset: the tag array
+    // itself has no reset, so it can map to RAM.
     always @(posedge clk_i) begin
-    if (rst_i) begin
-        valid_ram <= {TAG_COUNT{1'b0}};
-        ram_read_q <= {DATA_WIDTH{1'b0}};
-    end
-        else if (inv_all_i) begin
-        valid_ram  <= {TAG_COUNT{1'b0}};
-        ram_read_q <= {DATA_WIDTH{1'b0}};
         if (wr_i)
-            tag_ram[line_index] <= {dirty_icache_in,1'b0 ,ins_addr_i[ADDR_WIDTH-1:12]};
+            tag_ram[line_index] <= {dirty_icache_in, 1'b0, ins_addr_i[ADDR_WIDTH-1:12]};
     end
-        else if (wr_i) begin
-        valid_ram[line_index] <= valid_icache_in;
-        tag_ram[line_index]   <= {dirty_icache_in,1'b0 ,ins_addr_i[ADDR_WIDTH-1:12]};
-        ram_read_q            <= {dirty_icache_in,valid_icache_in ,ins_addr_i[ADDR_WIDTH-1:12]};
-    end
-        else 
-        ram_read_q <= {tag_ram[line_index][DIRTY_BIT],valid_ram[line_index],tag_ram[line_index][0 +:TAG_BITS]};
+
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            valid_ram  <= {TAG_COUNT{1'b0}};
+            ram_read_q <= {DATA_WIDTH{1'b0}};
+        end else if (inv_all_i) begin
+            valid_ram  <= {TAG_COUNT{1'b0}};
+            ram_read_q <= {DATA_WIDTH{1'b0}};
+        end else if (wr_i) begin
+            valid_ram[line_index] <= valid_icache_in;
+            ram_read_q            <= {dirty_icache_in, valid_icache_in, ins_addr_i[ADDR_WIDTH-1:12]};
+        end else begin
+            ram_read_q <= {tag_ram[line_index][DIRTY_BIT], valid_ram[line_index], tag_ram[line_index][0 +: TAG_BITS]};
+        end
     end
     assign tag_o =  ram_read_q;
 

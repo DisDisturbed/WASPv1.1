@@ -13,8 +13,8 @@
 #
 # Outputs: build/<TARGET>/<PROG>[_<SPX>][_hwrng]/
 #   wasp: main.elf dump.txt imem.mem dmem.mem
-#         imem.mem -> instruction BRAM init (icache_test_ins_mem reads "imem.mem")
-#         dmem.mem -> data BRAM init        (dcache_test_data_mem INIT_DATA)
+#         imem.mem -> instruction BRAM init (axi_ram u_ins_ram  in System_top)
+#         dmem.mem -> data BRAM init        (axi_ram u_data_ram in System_top)
 #   host: main   (run: build/host/aes/main < uart_rx.bin > uart_tx.bin)
 #
 # Examples:

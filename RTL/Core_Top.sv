@@ -1,27 +1,15 @@
 `timescale 1ns / 1ps
 `default_nettype none
 //top module for core it is designed to be able to work without system dependency
-// there is rst clk output ports they are routed from here because core need to function by itself
-// ROUTE THE OTHER CLK AND RESET SIGNAL OUTSIDE OF THIS MODULE IF YOU DONT WHAT TO MESS WITH CDC
+// clk and rst_n (active low, asynchronous) come from System_top, which holds
+// the clock wizard.
 //
-// CONVERSION NOTES (core_pkg / interface adoption):
-//   - instr_en_o/instr_addr_o/instr_gnt_i/instr_rvalid_i/instr_rdata_i and
-//     data_req_o/data_gnt_i/.../data_rdata_i are GONE from the port list --
-//     replaced by two real interface ports, obi_instr_if.master and
-//     obi_data_if.master. The instantiator (cache_system_top) now owns the
-//     interface instances and connects them to icache/dcache directly.
-//     For the 1:1 instruction path that's literally zero glue: one
-//     obi_instr_if instance shared between Core_Top's master port and
-//     icache's slave port. For the arbitrated data path (dcache vs PLIC)
-//     see obi_macros.svh + cache_system_top.sv -- a runtime slave choice
-//     cannot be expressed as an interface-array index (array element
-//     selection has to be elaboration-time), so that fan-out is explicit
-//     per-field muxing, done through the OBI_DATA_* macros.
-//   - id_ex_pc/id_ex_rs1_data/... (~26 wires), ex_mem_alu_res/... (~24
-//     wires) and mem_wb_alu_res/... (~18 wires) collapse into three
-//     bundle-typed wires: id_ex_bus, ex_mem_bus, mem_wb_bus. hazard_unit
-//     now takes the id_ex/ex_mem/mem_wb bundles directly instead of ~15
-//     individually named ports per boundary.
+// Buses:
+//   - instr_bus / data_bus: OBI master ports (obi_instr_if / obi_data_if).
+//     cache_system_top owns the interface instances and connects them to
+//     the I-cache and to the data-bus decoder (D-cache, PLIC, CLINT).
+//   - id_ex_bus / ex_mem_bus / mem_wb_bus: the pipeline registers, as
+//     core_pkg bundles. hazard_unit reads the bundles directly.
 
 module Core_Top
     import core_pkg::*;
@@ -29,10 +17,8 @@ module Core_Top
     parameter int DATA_WIDTH    = core_pkg::CORE_DATA_WIDTH,
     parameter int RF_ADDR_WIDTH = core_pkg::CORE_RF_ADDR_WIDTH
 )(
-    input  wire clk_in,
-    input  wire ext_rst_n,
-    output logic clk_o,
-    output logic rst_o,
+    input  wire clk,
+    input  wire rst_n,
 
     input  wire [DATA_WIDTH-1:0] boot_addr_i,
 
@@ -41,13 +27,10 @@ module Core_Top
     input  wire soft_irq_i,            // CLINT msip
     input  wire [63:0] mtime_i,        // CLINT mtime (time/timeh CSRs)
 
-    // OBI instruction-memory master port (was instr_en_o/instr_addr_o/
-    // instr_gnt_i/instr_rvalid_i/instr_rdata_i)
+    // OBI instruction-memory master port
     obi_instr_if.master instr_bus,
 
-    // OBI data-memory master port (was data_req_o/data_gnt_i/
-    // data_rvalid_i/data_addr_o/data_we_o/data_strb_o/data_wdata_o/
-    // data_rdata_i)
+    // OBI data-memory master port
     obi_data_if.master  data_bus,
 
     // FENCE.I cache maintenance (Zifencei): fencei_req_o is held while a
@@ -58,61 +41,30 @@ module Core_Top
 
     output logic csr_mie_reg_o
 );
-   // simple clk_wiz instantation for generating reset and clk signals
-    logic locked, clk;
-
-    `ifdef VERILATOR
-    // When compiling inside Verilator, bypass Xilinx PLL primitives completely
-
-    assign clk = clk_in;
-    assign locked = 1'b1;
-`else
-    // Your original Vivado IP block remains untouched for your FPGA build
-    clk_wiz_0 clkwiz0 (
-        .clk_out1 (clk),
-        .reset    (~ext_rst_n),
-        .locked   (locked),
-        .clk_in1  (clk_in)
-    );
-`endif
-
-
-
-    assign clk_o = clk;
-    logic rst_n;
-    assign rst_n = ext_rst_n & locked;
-    assign rst_o = rst_n;
-
     //internal wires for routing hazards and mux selections
     logic stall_if, stall_id, stall_ex, flush_if, flush_id, flush_ex;
-    logic stall_mem, flush_mem;
-    logic wb_stall, wb_flush;
+    logic stall_mem;
     logic [1:0] forward_a_sel, forward_b_sel;
-    logic if_busy;
     logic trap_redirect_accepted;
 
-    //pc control wires jump target mem is not used jumps solved on the ex stage
+    //pc control wires: jumps are solved on the ex stage
     pc_mux_sel_e            pc_mux;
     exc_pc_mux_e            exc_pc_mux;
     logic                  pc_set;
     logic [DATA_WIDTH-1:0] jump_target_ex;
-    logic [DATA_WIDTH-1:0] jump_target_mem;
     logic                  trap_take;
-    logic [DATA_WIDTH-1:0] trap_target_pc;
     logic                  mret_take;
-    logic [DATA_WIDTH-1:0] mret_target_pc;
     logic                  branch_decision;
 
     assign jump_target_ex = ex_mem_bus.branch_target;
 
-    // commiting logic for csr it is not tested
+    // WB commit signals (CSR writes, traps, mret, retire)
     logic                  wb_commit_trap;
     logic [5:0]            wb_commit_trap_cause;
     logic [DATA_WIDTH-1:0] wb_commit_trap_tval;
     logic [11:0]           wb_commit_csr_addr;
     csr_op_e               wb_commit_csr_op;
     logic [DATA_WIDTH-1:0] wb_commit_csr_wdata;
-    logic                  wb_commit_csr_access;
     logic                  wb_commit_csr_we;
     logic                  wb_commit_mret;
     logic                  wb_commit_retire;
@@ -120,7 +72,6 @@ module Core_Top
     //csr wires
 
     // THERE IS NOT A MIE ADDER ALLIGN IT WITH 256 on your codes otherwise it will not work
-    logic [DATA_WIDTH-1:0] csr_mtvec;
     logic [DATA_WIDTH-1:0] csr_mepc;
     logic                  csr_mstatus_mie;
     logic [DATA_WIDTH-1:0] csr_mie_reg;
@@ -168,13 +119,6 @@ module Core_Top
     logic                  if_id_valid;
     logic                  if_id_err;
     logic [DATA_WIDTH-1:0] pc_if;
-    logic                  csr_mtvec_init;
-
-    logic id_is_branch_w, id_is_jump_w, id_jalr_w;
-    assign id_is_branch_w = (if_id_instr[6:0] == 7'b110_0011);
-    assign id_is_jump_w   = (if_id_instr[6:0] == 7'b110_1111) ||
-                            (if_id_instr[6:0] == 7'b110_0111);
-    assign id_jalr_w      = (if_id_instr[6:0] == 7'b110_0111);
 
     // CSR access (SYSTEM, funct3 != 0) or MRET in ID -> CSR RAW check
     logic id_csr_read_w, id_kill, id_trap_req;
@@ -188,15 +132,10 @@ module Core_Top
                                                        CSR_ADDR_INSTRET,  CSR_ADDR_INSTRETH});
     logic mem_exc;
 
-    // pipeline-register bundles: these replace the ~26/~24/~18 individually
-    // named id_ex_*/ex_mem_*/mem_wb_* wires the pre-conversion Core_Top had.
+    // pipeline-register bundles
     id_ex_bundle_t  id_ex_bus;
     ex_mem_bundle_t ex_mem_bus;
     mem_wb_bundle_t mem_wb_bus;
-
-    // instr_bus / data_bus are now real module ports (see header) --
-    // IF_stage / MEM_stage connect to them directly, no local instance or
-    // glue assigns needed inside this module anymore.
 
     //  csr
     csr_file #(
@@ -220,7 +159,6 @@ module Core_Top
         .external_irq_i     (external_irq_i),
         .timer_irq_i        (timer_irq_i),
         .soft_irq_i         (soft_irq_i),
-        .mtvec_o            (csr_mtvec),
         .mepc_o             (csr_mepc),
         .mstatus_mie_o      (csr_mstatus_mie),
         .mie_o              (csr_mie_reg),
@@ -230,7 +168,7 @@ module Core_Top
     );
     assign csr_mie_reg_o = csr_mstatus_mie;
 
-    logic ex_busy, lsu_busy, lsu_ready_ex, lsu_ready_commit;
+    logic ex_busy, lsu_busy;
     logic [DATA_WIDTH-1:0] mem_forward_data, wb_forward_data;
 
     //hazard unit
@@ -239,8 +177,6 @@ module Core_Top
         .rst_n                    (rst_n),
         .id_rs1_addr_i            (if_id_instr[19:15]),
         .id_rs2_addr_i            (if_id_instr[24:20]),
-        .id_is_branch_i           (id_is_branch_w),
-        .id_jalr_i                (id_jalr_w),
         .id_csr_read_i            (id_csr_read_w),
         .id_cnt_read_i            (id_cnt_read_w),
         .id_trap_req_i            (id_trap_req),
@@ -250,7 +186,6 @@ module Core_Top
         .branch_decision_i        (branch_decision),
         .ex_busy_i                (ex_busy),
         .lsu_busy_i               (lsu_busy),
-        .if_busy_i                (if_busy),
         .trap_take_i              (trap_take),
         .mret_take_i              (mret_take),
         .mem_exc_i                (mem_exc),
@@ -263,12 +198,9 @@ module Core_Top
         .stall_id_o               (stall_id),
         .stall_ex_o               (stall_ex),
         .stall_mem_o              (stall_mem),
-        .stall_wb_o               (wb_stall),
         .flush_if_o               (flush_if),
         .flush_id_o               (flush_id),
         .flush_ex_o               (flush_ex),
-        .flush_mem_o              (flush_mem),
-        .flush_wb_o               (wb_flush),
         .trap_redirect_accepted_o (trap_redirect_accepted),
         .id_kill_o                (id_kill)
     );
@@ -291,13 +223,10 @@ module Core_Top
         .pc_mux_i           (pc_mux),
         .exc_pc_mux_i       (exc_pc_mux),
         .pc_set_i           (pc_set),
-        .jump_target_mem_i  (jump_target_mem),
         .jump_target_ex_i   (jump_target_ex),
         .instr_bus          (instr_bus),
         .stall_i            (stall_if),
         .flush_i            (flush_if),
-        .if_busy_o          (if_busy),
-        .csr_mtvec_init_o   (csr_mtvec_init),
         .instr_rdata_id_o   (if_id_instr),
         .instr_valid_id_o   (if_id_valid),
         .instr_err_id_o     (if_id_err),
@@ -312,8 +241,7 @@ module Core_Top
      //  ID
     ID_stage #(
         .DATA_WIDTH       (DATA_WIDTH),
-        .RF_ADDR_WIDTH    (RF_ADDR_WIDTH),
-        .INSTR_TYPE_WIDTH (3)
+        .RF_ADDR_WIDTH    (RF_ADDR_WIDTH)
     ) id_stage_inst (
         .clk                (clk),
         .rst_n              (rst_n),
@@ -332,26 +260,19 @@ module Core_Top
         .soft_irq_i         (soft_irq_i),
         // CSR inputs
         .csr_rdata_i        (csr_rdata_id),
-        .csr_mtvec_i        (csr_mtvec),
-        .csr_mepc_i         (csr_mepc),
         .csr_mie_i          (csr_mie_effective),   // mstatus.MIE && !trap_in_flight
         .csr_mie_regs_i     (csr_mie_reg),         // full mie register for per-source bits
         // Trap / MRET outputs
         .trap_req_o         (id_trap_req),
         .trap_take_o        (trap_take),
-        .trap_target_pc_o   (trap_target_pc),
         .mret_take_o        (mret_take),
-        .mret_target_pc_o   (mret_target_pc),
         // ID/EX pipeline bundle out
         .id_ex_o            (id_ex_bus)
     );
 
-    logic [DATA_WIDTH-1:0] ex_combinational_res;
-
     //  EX (why did she choose a misunderstanding over me)
     EX_stage #(
-        .DATA_WIDTH     (DATA_WIDTH),
-        .REG_ADDR_WIDTH (RF_ADDR_WIDTH)
+        .DATA_WIDTH     (DATA_WIDTH)
     ) ex_stage_inst (
         .clk                    (clk),
         .rst_n                  (rst_n),
@@ -363,7 +284,6 @@ module Core_Top
         .mem_forward_data_i     (mem_forward_data),
         .wb_forward_data_i      (wb_forward_data),
         .id_ex_i                (id_ex_bus),
-        .ex_combinational_res_o (ex_combinational_res),
         .ex_mem_o               (ex_mem_bus),
         .ex_branch_decision_o   (branch_decision)
     );
@@ -376,18 +296,14 @@ module Core_Top
         .clk                    (clk),
         .rst_n                  (rst_n),
         .stall_i                (stall_mem),
-        .flush_i                (flush_mem),
         .ex_mem_i               (ex_mem_bus),
         .data_bus               (data_bus),
         .lsu_busy_o             (lsu_busy),
-        .lsu_ready_ex_o         (lsu_ready_ex),
-        .lsu_ready_commit_o     (lsu_ready_commit),
         .mem_forward_data_o     (mem_forward_data),
         .mem_exc_o              (mem_exc),
         .fencei_req_o           (fencei_req_o),
         .fencei_done_i          (fencei_done_i),
-        .mem_wb_o               (mem_wb_bus),
-        .mem_jump_target_o      (jump_target_mem)
+        .mem_wb_o               (mem_wb_bus)
     );
 
     //  WB
@@ -395,9 +311,6 @@ module Core_Top
         .DATA_WIDTH    (DATA_WIDTH),
         .RF_ADDR_WIDTH (RF_ADDR_WIDTH)
     ) wb_stage_inst (
-        .clk                 (clk),
-        .flush_i             (wb_flush),
-        .stall_i             (wb_stall),
         .mem_wb_i            (mem_wb_bus),
         .wb_rf_wen_o         (wb_rf_wen),
         .wb_rf_waddr_o       (wb_rf_waddr),
@@ -409,7 +322,6 @@ module Core_Top
         .wb_csr_addr_o       (wb_commit_csr_addr),
         .wb_csr_op_o         (wb_commit_csr_op),
         .wb_csr_wdata_o      (wb_commit_csr_wdata),
-        .wb_csr_access_o     (wb_commit_csr_access),
         .wb_csr_we_o         (wb_commit_csr_we),
         .wb_mret_o           (wb_commit_mret),
         .wb_retire_o         (wb_commit_retire)
@@ -448,8 +360,6 @@ module Core_Top
                 else
                     $fdisplay(trace_fd, "[BRANCH] PC:%h NOT TAKEN", id_ex_bus.pc);
             end
-            if (if_busy)
-                $fdisplay(trace_fd, "[ICACHE_STALL] PC:%h", pc_if);
             if (trap_in_flight && (external_irq_i || timer_irq_i) && !csr_mie_effective)
                 $fdisplay(trace_fd, "[IRQ_HELD] trap_in_flight=1, IRQ masked until WB commit");
         end

@@ -14,7 +14,7 @@
  *     +0x5000  spare AXI slot 4
  *     +0x6000  spare AXI slot 5
  *
- * Access faults (RTL/cache_system_top.sv, RTL/icache.sv; handled with trap.h):
+ * Access faults (RTL/axi_xbar.sv DECERR, RTL/axi_ram.sv SLVERR, RTL/icache.sv; handled with trap.h):
  *   load  access fault (mcause 5): address not mapped, read of the D-cache
  *                                  flush register (write-only), spare slot
  *                                  without a slave (System_top SLOT_PRESENT)

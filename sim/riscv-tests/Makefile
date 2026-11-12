@@ -67,7 +67,8 @@ SPIKE   ?= $(or $(shell command -v spike 2>/dev/null),$(wildcard /home/yusuf/spi
 SPIKE_ARGS := --isa=rv32im_zicsr_zicntr --priv=m --triggers=0 -m0x40000000:0x10000,0x80000000:0x10000 --pc=0x40000000
 
 # ---- Verilator model (same RTL list / flags as sim/Makefile) --------------
-PKG  := $(RTL)/PGK_IF/core_pgk.sv $(RTL)/PGK_IF/obi_if.sv $(RTL)/PGK_IF/Irq_if.sv
+PKG  := $(RTL)/PGK_IF/core_pgk.sv $(RTL)/PGK_IF/axi_pkg.sv \
+        $(RTL)/PGK_IF/obi_if.sv $(RTL)/PGK_IF/Irq_if.sv $(RTL)/PGK_IF/axi_if.sv
 SRCS := $(PKG) $(wildcard $(RTL)/*.sv) $(wildcard $(RTL)/*.v) \
         $(ROOT)/sim/axi_uart16550_0.sv $(abspath tb_rvtest.sv)
 VFLAGS := --binary --timing -j 0 -O3 --top-module tb_rvtest \

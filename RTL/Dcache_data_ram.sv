@@ -7,7 +7,7 @@ module dcache_data_ram #(
     parameter data_width  = 32
 )(
     input  wire        clk_i,
-    input  wire        rst,
+    input  wire        rst_n,
     input  wire        req_i,
     input  wire [5:0]  line_idx_i,
     input  wire [3:0]  word_idx_i,
@@ -47,7 +47,7 @@ module dcache_data_ram #(
             data_o_reg <= data_ram[ram_addr];
     end
 
-    assign rdata_o = rst ? 32'b0 : data_o_reg;
+    assign rdata_o = rst_n ? data_o_reg : 32'b0;
 
 endmodule
 

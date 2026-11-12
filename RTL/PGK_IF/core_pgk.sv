@@ -4,95 +4,50 @@
 // =============================================================================
 // core_pkg
 //
-// Consolidated definitions for the core: PC-mux encodings, CSR address map,
-// trap cause codes, and packed pipeline-register bundles (ID/EX, EX/MEM,
+// Shared definitions of the core: PC-mux encodings, CSR address map, trap
+// cause codes, and the packed pipeline-register bundles (ID/EX, EX/MEM,
 // MEM/WB).
 //
-// WHAT WAS PROMOTED HERE, AND WHY:
-//   - pc_mux_sel_e / exc_pc_mux_e / trap_mode_e
-//       Previously defined independently in BOTH IF_stage (as a local
-//       typedef) and hazard_unit (as raw localparams with hand-copied
-//       values). Two definitions of the same encoding with no compiler
-//       link between them -- this is the actual duplication risk that
-//       justified a package, not a stylistic preference.
+// What lives here, and why:
+//   - pc_mux_sel_e / exc_pc_mux_e / trap_addr_mux_e
+//       hazard_unit drives them and IF_stage consumes them; one definition
+//       keeps the two from drifting apart.
 //   - CSR address map, CSR op encoding
-//       Previously localparams local to csr_file only. Promoted because
-//       U/S-mode work needs S-mode addresses added, and other stages
-//       (ID_stage decodes csr_addr, EX_stage forms csr_wdata_final_w)
-//       reference CSR semantics and will benefit from named constants
-//       instead of raw 12-bit literals.
+//       Used by csr_file and by the stages that decode CSR accesses. The
+//       S-mode addresses are there for the planned U/S-mode work.
 //   - Trap cause codes
-//       Previously raw 6-bit magic numbers (6'd0, 6'd2, 6'd3, 6'd7,
-//       6'd11) scattered across ID_stage and EX_stage. This list is
-//       about to roughly double for U/S-mode delegation (separate
-//       ECALL-from-U / ECALL-from-S causes) -- naming them now, before
-//       that expansion, is the whole point.
-//   - Branch-type encoding, WB-mux encoding
-//       Both are explicitly given in your EX_stage (branch_dec block)
-//       and WB_stage (wb_mux block) source as literal case values. Named
-//       here so the two locations that must agree can't silently drift.
+//       Named constants for ID_stage, EX_stage, MEM_stage and csr_file.
+//   - Branch-type and WB-mux encodings
+//       control_unit produces them, EX_stage / WB_stage consume them.
 //   - id_ex_bundle_t / ex_mem_bundle_t / mem_wb_bundle_t
-//       Packed structs matching your CURRENT port lists field-for-field.
-//       These are NOT SystemVerilog interfaces/modports -- deliberately.
-//       Your pipeline stages are always connected to the same fixed
-//       neighbor (ID always drives EX, never anything else), so a
-//       modport's "contract between interchangeable parties" justification
-//       doesn't apply here, and it would add an abstraction tax on
-//       exactly the part of the design meant to stay approachable to
-//       future undergrad contributors. A plain packed struct still solves
-//       the actual problem (adding a field, e.g. priv_mode for U/S-mode,
-//       currently means editing N ports across 3 stage boundaries AND
-//       their instantiations in Core_Top) by making it a one-line change
-//       in ONE place. Waveform viewers expand packed structs like any
-//       other bus, so nothing gets harder to debug.
+//       Plain packed structs, deliberately not interfaces: a pipeline stage
+//       always talks to the same fixed neighbour, so there is no contract
+//       between interchangeable parties for a modport to describe. A struct
+//       still makes adding a field a one-line change in one place, and
+//       waveform viewers expand it like any other bus.
 //
-// WHAT WAS DELIBERATELY *NOT* PROMOTED HERE:
-//   - alu_ctrl, mem_ctrl, muldiv_ctrl encodings: control_unit, Alu, and
-//     MulDiv were not part of what was reviewed, so their actual
-//     encodings are unknown. Guessing an enum here would risk creating a
-//     THIRD, WRONG definition instead of preventing a duplicate one.
-//     These fields are left as plain logic vectors below -- if you want
-//     them enumerated too, do it from the real control_unit/Alu source,
-//     not from this file.
-//   - OBI / AXI bus signals: those get real SystemVerilog interfaces
-//     with modports (separate file), because a modport's justification
-//     -- multiple possible connectees implementing a shared contract --
-//     genuinely applies there (peripherals, masters, slaves), unlike the
-//     fixed stage-to-stage pipeline wiring below. See obi_if.sv.
-//
-// HOW TO ADOPT THIS INCREMENTALLY (no big-bang rewrite required):
-//   1. `import core_pkg::*;` at the top of each module that currently
-//      redefines any of the enums/params below, delete the local
-//      redefinition, confirm the module still elaborates identically.
-//   2. Re-run your riscv-dv/Spike regression after each module you
-//      convert. Do this one module at a time, not all five stages at
-//      once -- if something breaks you want to know which conversion did
-//      it.
-//   3. The packed structs at the bottom are ready to use whenever you
-//      want to switch a stage boundary over, but adopting them is
-//      optional and separate from step 1/2 -- the enum/param cleanup is
-//      the higher-value, lower-risk part of this and can be done first
-//      on its own.
+// What is deliberately not here:
+//   - alu_ctrl, mem_ctrl, muldiv_ctrl encodings: defined by the case
+//     statements in Alu, load_store_unit and MulDiv. They are plain logic
+//     vectors in the bundles below.
+//   - Bus signals: OBI and AXI are real SystemVerilog interfaces with
+//     modports (obi_if.sv, axi_if.sv; AXI widths and encodings in
+//     axi_pkg.sv), because there the other end really is interchangeable
+//     (caches, memories, peripherals).
 // =============================================================================
 
 package core_pkg;
 
     // -------------------------------------------------------------------
     // Global widths
-    // Hardcoded to match every current instantiation (Core_Top is always
-    // built with DATA_WIDTH=32, RF_ADDR_WIDTH=5). If you ever actually
-    // instantiate the core with different widths, these structs need to
-    // become parameterized packages (`package core_pkg #(...)`) instead --
-    // not worth doing until/unless that's a real requirement.
+    // Fixed: Core_Top is always built with DATA_WIDTH=32, RF_ADDR_WIDTH=5.
+    // A core with other widths would need the bundles below parameterized.
     // -------------------------------------------------------------------
     localparam int CORE_DATA_WIDTH    = 32;
     localparam int CORE_RF_ADDR_WIDTH = 5;
 
     // =====================================================================
-    // PC mux selection
-    // Source of truth was duplicated between IF_stage's local typedef and
-    // hazard_unit's raw localparams. Values below match both existing
-    // definitions exactly -- this promotion changes nothing behaviorally.
+    // PC mux selection (driven by hazard_unit, consumed by IF_stage)
     // =====================================================================
     typedef enum logic [3:0] {
         PC_BOOT      = 4'd0,
@@ -114,17 +69,14 @@ package core_pkg;
     typedef enum logic [1:0] {
         TRAP_M = 2'd0,
         TRAP_U = 2'd1
-        // TRAP_S left unassigned deliberately -- add it here (and only
-        // here) when S-mode trap-base routing is implemented, instead of
-        // adding a third scattered definition somewhere else.
+        // TRAP_S is left unassigned until S-mode trap-base routing exists;
+        // add it here.
     } trap_addr_mux_e;
 
     // =====================================================================
     // Privilege levels
-    // Matches RISC-V privilege encoding (used directly as mstatus.MPP /
-    // mstatus.SPP values). Not present in your current RTL -- new for the
-    // U/S-mode work, defined here so there's exactly one definition from
-    // the start instead of one appearing ad hoc wherever it's first needed.
+    // RISC-V privilege encoding (the mstatus.MPP / mstatus.SPP values).
+    // Only PRIV_M is used so far; U and S are for the planned U/S-mode work.
     // =====================================================================
     typedef enum logic [1:0] {
         PRIV_U = 2'b00,
@@ -135,13 +87,11 @@ package core_pkg;
 
     // =====================================================================
     // CSR address map
-    // M-mode addresses match your existing csr_file localparams exactly.
-    // S-mode addresses are the standard RISC-V assignments, added now
-    // since U/S-mode work needs them and this is the one place they
-    // should be defined.
+    // Standard RISC-V assignments. The S-mode addresses are not used yet
+    // (planned U/S-mode work).
     // =====================================================================
     localparam logic [11:0]
-        // ---- Machine mode (existing) ----
+        // ---- Machine mode ----
         CSR_ADDR_MSTATUS   = 12'h300,
         CSR_ADDR_MISA      = 12'h301,
         CSR_ADDR_MEDELEG   = 12'h302,   // new: exception delegation
@@ -225,32 +175,27 @@ package core_pkg;
     localparam logic [5:0]
         TRAP_CAUSE_INSTR_ADDR_MISALIGNED = 6'd0,
         TRAP_CAUSE_INSTR_ACCESS_FAULT    = 6'd1,   // fetch outside IMEM/DMEM (icache err)
-        TRAP_CAUSE_ILLEGAL_INSTRUCTION   = 6'd2,   // existing: illegal_instr_w
-        TRAP_CAUSE_BREAKPOINT            = 6'd3,   // existing: ebreak_w
+        TRAP_CAUSE_ILLEGAL_INSTRUCTION   = 6'd2,
+        TRAP_CAUSE_BREAKPOINT            = 6'd3,
         TRAP_CAUSE_LOAD_ADDR_MISALIGNED  = 6'd4,
         TRAP_CAUSE_LOAD_ACCESS_FAULT     = 6'd5,   // data bus err on a load
         TRAP_CAUSE_STORE_ADDR_MISALIGNED = 6'd6,
         TRAP_CAUSE_STORE_ACCESS_FAULT    = 6'd7,   // data bus err on a store
-        // (6'd7 used to be a custom divide-by-zero trap; division by zero
-        //  is not an exception in RISC-V, see docs/riscv_tests.md)
-        TRAP_CAUSE_ECALL_FROM_U          = 6'd8,    // new: needed once U-mode exists
-        TRAP_CAUSE_ECALL_FROM_S          = 6'd9,    // new: needed once S-mode exists
-        TRAP_CAUSE_ECALL_FROM_M          = 6'd11;   // existing behavior, renamed
-                                                     // from the old unlabeled
-                                                     // ecall_w -> 6'd11 assignment
+        // (division by zero is not an exception in RISC-V, see
+        //  docs/riscv_tests.md)
+        TRAP_CAUSE_ECALL_FROM_U          = 6'd8,    // needed once U-mode exists
+        TRAP_CAUSE_ECALL_FROM_S          = 6'd9,    // needed once S-mode exists
+        TRAP_CAUSE_ECALL_FROM_M          = 6'd11;
 
     // ---- Interrupts (bit 5 = 1, i.e. 6'd32 + cause number) ----
     localparam logic [5:0]
         TRAP_CAUSE_SW_INTERRUPT_M    = 6'd35,  // {1'b1, 5'd3}
-        TRAP_CAUSE_TIMER_INTERRUPT_M = 6'd39,  // {1'b1, 5'd7}  (existing)
-        TRAP_CAUSE_EXT_INTERRUPT_M   = 6'd43;  // {1'b1, 5'd11} (existing)
+        TRAP_CAUSE_TIMER_INTERRUPT_M = 6'd39,  // {1'b1, 5'd7}
+        TRAP_CAUSE_EXT_INTERRUPT_M   = 6'd43;  // {1'b1, 5'd11}
 
     // =====================================================================
     // Branch comparison type
-    // Matches EX_stage's `branch_dec` case exactly -- promoted so
-    // control_unit (which must produce the same encoding) and EX_stage
-    // (which consumes it) share one definition instead of agreeing by
-    // convention only.
+    // Produced by control_unit, consumed by EX_stage's `branch_dec` case.
     // =====================================================================
     typedef enum logic [2:0] {
         BR_BEQ  = 3'b000,
@@ -263,7 +208,7 @@ package core_pkg;
 
     // =====================================================================
     // WB source select
-    // Matches WB_stage's `wb_mux` case exactly.
+    // Produced by control_unit, consumed by WB_stage's `wb_mux` case.
     // =====================================================================
     typedef enum logic [1:0] {
         WB_SEL_ALU_RESULT = 2'b00,
@@ -274,14 +219,11 @@ package core_pkg;
     // =====================================================================
     // Pipeline register bundles
     //
-    // Field-for-field match to your CURRENT id_ex_* / ex_mem_* / mem_wb_*
-    // port lists in Core_Top, so adopting these is a mechanical
-    // substitution, not a redesign. alu_ctrl / mem_ctrl / muldiv_ctrl kept
-    // as plain vectors -- see file header for why.
+    // One struct per stage boundary. alu_ctrl / mem_ctrl / muldiv_ctrl are
+    // plain vectors, see the file header.
     //
-    // priv_mode field added to each bundle now, unused until the U/S-mode
-    // work begins, so that adding it later doesn't require editing three
-    // struct definitions plus every stage's port list a second time.
+    // Each bundle has a priv_mode field, unused until the U/S-mode work
+    // begins.
     // =====================================================================
 
     typedef struct packed {

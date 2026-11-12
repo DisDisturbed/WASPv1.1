@@ -1,15 +1,11 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// Takes core_pkg::ex_mem_bundle_t in, produces core_pkg::mem_wb_bundle_t
-// out. Owns an external obi_data_if.master port (data_bus) plus a second,
-// internal-only obi_data_if instance (lsu_bus) that connects to
-// load_store_unit -- every field except req passes straight from lsu_bus
-// to data_bus; req alone is gated by wait_rvalid_q, which is state this
-// stage owns and load_store_unit has no notion of. This mirrors exactly
-// the "lsu_raw_req -> data_req_o" split the pre-interface version of this
-// module already had; it's now expressed as two interface instances
-// instead of a bundle of loose wires.
+// core_pkg::ex_mem_bundle_t in, core_pkg::mem_wb_bundle_t out. Owns the
+// external obi_data_if.master port (data_bus) and an internal obi_data_if
+// instance (lsu_bus) to load_store_unit. Every field except req passes
+// straight from lsu_bus to data_bus; req is gated by wait_rvalid_q, which
+// is state this stage owns and load_store_unit knows nothing about.
 module MEM_stage
     import core_pkg::*;
 #(
@@ -20,7 +16,6 @@ module MEM_stage
     input  wire rst_n,
 
     input  wire stall_i,
-    input  wire flush_i,
 
     input  ex_mem_bundle_t   ex_mem_i,
 
@@ -28,8 +23,6 @@ module MEM_stage
     obi_data_if.master        data_bus,
 
     output logic              lsu_busy_o,
-    output logic              lsu_ready_ex_o,
-    output logic              lsu_ready_commit_o,
 
     output logic [DATA_WIDTH-1:0] mem_forward_data_o,
 
@@ -43,8 +36,7 @@ module MEM_stage
     output logic              fencei_req_o,
     input  wire               fencei_done_i,
 
-    output mem_wb_bundle_t    mem_wb_o,
-    output logic [DATA_WIDTH-1:0] mem_jump_target_o
+    output mem_wb_bundle_t    mem_wb_o
 );
 
     logic data_req_ex_w;
@@ -55,7 +47,6 @@ module MEM_stage
     logic [5:0]            lsu_trap_cause_raw_w;
     logic                  lsu_trap_w;          // + bus error on this instruction's access
     logic [5:0]            lsu_trap_cause_w;
-    logic                  lsu_raw_busy;
 
     // Internal hop between this stage and load_store_unit -- see header.
     obi_data_if #(.DATA_WIDTH(DATA_WIDTH), .ADDR_WIDTH(DATA_WIDTH)) lsu_bus();
@@ -74,7 +65,7 @@ module MEM_stage
     logic wait_rvalid_q;
 
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n || flush_i) begin
+        if (!rst_n) begin
             wait_rvalid_q <= 1'b0;
         end else if (ex_mem_i.is_load) begin
             wait_rvalid_q <= (wait_rvalid_q | (lsu_bus.req & data_bus.gnt)) & ~data_bus.rvalid;
@@ -117,9 +108,6 @@ module MEM_stage
     assign fencei_req_o = ex_mem_i.fencei;
 
     load_store_unit lsu_inst (
-        .clk              (clk),
-        .rst_n            (rst_n),
-
         .data_bus         (lsu_bus),
 
         .ex_mem_i         (ex_mem_i),
@@ -128,11 +116,7 @@ module MEM_stage
         .data_req_ex_i    (data_req_ex_w),
 
         .lsu_trap_o       (lsu_trap_raw_w),
-        .lsu_trap_cause_o (lsu_trap_cause_raw_w),
-
-        .lsu_ready_ex_o     (lsu_ready_ex_o),
-        .lsu_ready_commit_o (lsu_ready_commit_o),
-        .lsu_busy_o         (lsu_raw_busy)
+        .lsu_trap_cause_o (lsu_trap_cause_raw_w)
     );
 
     assign mem_exc_o = ex_mem_i.trap ? ex_mem_i.trap_late : lsu_trap_w;
@@ -142,11 +126,9 @@ module MEM_stage
     end
 
     always_ff @(posedge clk or negedge rst_n) begin : mem_wb_reg
-        if (!rst_n || flush_i) begin
+        if (!rst_n) begin
             mem_wb_o          <= '0;
-            mem_jump_target_o <= '0;
         end else if (!stall_i) begin
-            mem_jump_target_o   <= ex_mem_i.branch_target;
             mem_wb_o.alu_res    <= ex_mem_alu_res;
             mem_wb_o.rdata      <= lsu_rdata_w;
             mem_wb_o.rd_addr    <= ex_mem_rd_addr_safe;
