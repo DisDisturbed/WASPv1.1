@@ -350,7 +350,7 @@ module Core_Top
 
     //  EX (why did she choose a misunderstanding over me)
     EX_stage #(
-        .DATA_WIDTH     (DATA_WIDT
+        .DATA_WIDTH     (DATA_WIDTH),
         .REG_ADDR_WIDTH (RF_ADDR_WIDTH)
     ) ex_stage_inst (
         .clk                    (clk),
