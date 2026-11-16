@@ -15,7 +15,8 @@ module Core_Top
     import core_pkg::*;
 #(
     parameter int DATA_WIDTH    = core_pkg::CORE_DATA_WIDTH,
-    parameter int RF_ADDR_WIDTH = core_pkg::CORE_RF_ADDR_WIDTH
+    parameter int RF_ADDR_WIDTH = core_pkg::CORE_RF_ADDR_WIDTH,
+    parameter logic [31:0] HART_ID = 32'd0   // value of mhartid
 )(
     input  wire clk,
     input  wire rst_n,
@@ -139,7 +140,8 @@ module Core_Top
 
     //  csr
     csr_file #(
-        .DATA_WIDTH (DATA_WIDTH)
+        .DATA_WIDTH (DATA_WIDTH),
+        .HART_ID    (HART_ID)
     ) csr_inst (
         .clk                (clk),
         .rst_n              (rst_n),
@@ -335,7 +337,9 @@ module Core_Top
 `ifndef WASP_NO_TRACE   // define it for long simulations (sim/Makefile "fast")
     integer trace_fd;
     initial begin
-        trace_fd = $fopen("cpu_trace.log", "w");
+        // hart 0 keeps the WASP name; other harts (WASP_SoC) get their own file
+        trace_fd = (HART_ID == 0) ? $fopen("cpu_trace.log", "w")
+                                  : $fopen($sformatf("cpu_trace_h%0d.log", HART_ID), "w");
         if (trace_fd == 0) $display("ERROR: Could not open trace file!");
     end
 

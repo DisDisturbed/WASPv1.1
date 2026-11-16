@@ -43,7 +43,8 @@
 module csr_file
     import core_pkg::*;
 #(
-    parameter int DATA_WIDTH = core_pkg::CORE_DATA_WIDTH
+    parameter int DATA_WIDTH = core_pkg::CORE_DATA_WIDTH,
+    parameter logic [31:0] HART_ID = 32'd0   // mhartid (multi-hart builds, see WASP_SoC)
 )(
     input  wire clk,
     input  wire rst_n,
@@ -172,8 +173,9 @@ module csr_file
             CSR_ADDR_MINSTRETH,CSR_ADDR_INSTRETH:csr_rdata_o = minstret_r[63:32];
             CSR_ADDR_TIME:                       csr_rdata_o = mtime_i[31:0];
             CSR_ADDR_TIMEH:                      csr_rdata_o = mtime_i[63:32];
+            CSR_ADDR_MHARTID:                    csr_rdata_o = HART_ID;
             CSR_ADDR_MVENDORID, CSR_ADDR_MARCHID,
-            CSR_ADDR_MIMPID,   CSR_ADDR_MHARTID,
+            CSR_ADDR_MIMPID,
             CSR_ADDR_MCONFIGPTR, CSR_ADDR_MSTATUSH: csr_rdata_o = '0;
             default:                             csr_rdata_o = '0;
         endcase

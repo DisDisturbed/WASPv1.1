@@ -61,6 +61,15 @@ ifeq ($(PROG),aes)
   SRCS = apps/aes/main.c
   OPT  = -O0 -fno-inline
 endif
+# two-hart mutual exclusion test: only meaningful on WASP_SoC (needs 2 harts
+# and the shared window at 0x9000_0000)
+ifeq ($(PROG),peterson)
+  ifeq ($(TARGET),host)
+    $(error PROG=peterson needs two WASP harts (WASP_SoC); it has no host build)
+  endif
+  SRCS = apps/peterson/main.c
+  OPT  = -O2
+endif
 ifeq ($(PROG),counters)
   ifeq ($(TARGET),host)
     $(error PROG=counters tests the CSR/CLINT/PLIC hardware; it has no host build)
@@ -81,7 +90,7 @@ ifeq ($(PROG),sphincs)
   LDEXTRA_wasp = -Wl,--defsym=__stack_size=0x4000
 endif
 ifndef SRCS
-  $(error unknown PROG=$(PROG) (aes | counters | sphincs))
+  $(error unknown PROG=$(PROG) (aes | counters | sphincs | peterson))
 endif
 
 OUT = build/$(TARGET)/$(PROG)$(if $(filter sphincs,$(PROG)),_$(SPX)$(if $(filter hw,$(RNG)),_hwrng))
