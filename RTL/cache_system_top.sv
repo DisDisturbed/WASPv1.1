@@ -62,7 +62,11 @@ module cache_system_top #(
     // CORE native OBI
     Core_Top #(
         .DATA_WIDTH(DATA_WIDTH),
-        .RF_ADDR_WIDTH(RF_ADDR_WIDTH)
+        .RF_ADDR_WIDTH(RF_ADDR_WIDTH),
+        // store buffer: only DMEM (normal memory) stores are buffered
+        .SB_DEPTH     (16),
+        .SB_BUF0_BASE (DMEM_BASE),
+        .SB_BUF0_SIZE (32'd1 << DMEM_ADDR_WIDTH)
     ) u_core (
         .clk            (clk),
         .rst_n          (rst_n),

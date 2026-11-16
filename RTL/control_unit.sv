@@ -51,6 +51,7 @@ module control_unit
     output logic        csr_access_o,
     output logic        mret_o,
     output logic        fencei_o,        // FENCE.I (Zifencei)
+    output logic        fence_o,         // FENCE (orders memory: drains the store buffer)
     output logic        ecall_o,
     output logic        ebreak_o,
     output logic        illegal_instr_o
@@ -168,6 +169,7 @@ module control_unit
 
         mret_o          = 1'b0;
         fencei_o        = 1'b0;
+        fence_o         = 1'b0;
         ecall_o         = 1'b0;
         ebreak_o        = 1'b0;
         illegal_instr_o = 1'b0;
@@ -291,13 +293,15 @@ module control_unit
             end
 
             OP_MISC_MEM: begin
-                // FENCE (funct3 000, incl. FENCE.TSO / PAUSE): one in-order
-                // hart whose loads/stores complete before the next one
-                // issues -> nothing to order, executes as a NOP.
+                // FENCE (funct3 000, incl. FENCE.TSO / PAUSE): waits in MEM
+                // until the store buffer is empty (loads may overtake
+                // buffered stores to other addresses, see store_buffer.sv).
+                // The pred/succ bits are not looked at: every FENCE drains.
                 // FENCE.I (funct3 001, Zifencei): in MEM the D-cache writes
                 // back every dirty line, then the I-cache is invalidated and
                 // fetch restarts at pc+4 (MEM_stage / hazard_unit).
                 if (funct3 == 3'b001)      fencei_o        = 1'b1;
+                else if (funct3 == 3'b000) fence_o         = 1'b1;
                 else if (funct3 != 3'b000) illegal_instr_o = 1'b1;
             end
 

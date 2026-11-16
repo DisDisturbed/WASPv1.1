@@ -247,6 +247,7 @@ MulDiv #(.DATA_WIDTH(DATA_WIDTH)) muldiv_inst (
                 ex_mem_o.csr_we        <= id_ex_i.csr_we;
                 ex_mem_o.mret          <= id_ex_i.mret;
                 ex_mem_o.fencei        <= id_ex_i.fencei && !generated_trap_w;
+                ex_mem_o.fence         <= id_ex_i.fence && !generated_trap_w;
                 ex_mem_o.priv_mode     <= id_ex_i.priv_mode;
                 ex_mem_o.valid         <= id_ex_i.valid && !generated_trap_w;
 

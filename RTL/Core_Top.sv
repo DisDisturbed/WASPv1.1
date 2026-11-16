@@ -16,7 +16,14 @@ module Core_Top
 #(
     parameter int DATA_WIDTH    = core_pkg::CORE_DATA_WIDTH,
     parameter int RF_ADDR_WIDTH = core_pkg::CORE_RF_ADDR_WIDTH,
-    parameter logic [31:0] HART_ID = 32'd0   // value of mhartid
+    parameter logic [31:0] HART_ID = 32'd0,  // value of mhartid
+    // store buffer (store_buffer.sv): depth (0 = off) and the normal-memory
+    // ranges whose stores it may buffer (stores elsewhere stay precise)
+    parameter int          SB_DEPTH     = 16,
+    parameter logic [31:0] SB_BUF0_BASE = 32'h8000_0000,
+    parameter logic [31:0] SB_BUF0_SIZE = 32'h0001_0000,
+    parameter logic [31:0] SB_BUF1_BASE = 32'h0000_0000,
+    parameter logic [31:0] SB_BUF1_SIZE = 32'h0000_0000
 )(
     input  wire clk,
     input  wire rst_n,
@@ -293,7 +300,12 @@ module Core_Top
     //  MEM
     MEM_stage #(
         .DATA_WIDTH    (DATA_WIDTH),
-        .RF_ADDR_WIDTH (RF_ADDR_WIDTH)
+        .RF_ADDR_WIDTH (RF_ADDR_WIDTH),
+        .SB_DEPTH      (SB_DEPTH),
+        .SB_BUF0_BASE  (SB_BUF0_BASE),
+        .SB_BUF0_SIZE  (SB_BUF0_SIZE),
+        .SB_BUF1_BASE  (SB_BUF1_BASE),
+        .SB_BUF1_SIZE  (SB_BUF1_SIZE)
     ) mem_stage_inst (
         .clk                    (clk),
         .rst_n                  (rst_n),
@@ -350,13 +362,13 @@ module Core_Top
             if (wb_rf_wen && wb_rf_waddr != 0 && wb_commit_retire)
                 $fdisplay(trace_fd, "[COMMIT] PC:%h x%0d<-%h",
                           mem_wb_bus.pc, wb_rf_waddr, wb_rf_wdata);
-            if (data_bus.req && data_bus.gnt && data_bus.we)
+            if (mem_stage_inst.core_bus.req && mem_stage_inst.core_bus.gnt && mem_stage_inst.core_bus.we)
                 $fdisplay(trace_fd, "[STORE]  PC:%h addr:%h data:%h strb:%b",
-                          ex_mem_bus.pc, data_bus.addr, data_bus.wdata, data_bus.be);
-            if (data_bus.req && data_bus.gnt && !data_bus.we)
-                $fdisplay(trace_fd, "[LOAD]   PC:%h addr:%h", ex_mem_bus.pc, data_bus.addr);
-            if (data_bus.rvalid)
-                $fdisplay(trace_fd, "  -> [RAM_RX] %h", data_bus.rdata);
+                          ex_mem_bus.pc, mem_stage_inst.core_bus.addr, mem_stage_inst.core_bus.wdata, mem_stage_inst.core_bus.be);
+            if (mem_stage_inst.core_bus.req && mem_stage_inst.core_bus.gnt && !mem_stage_inst.core_bus.we)
+                $fdisplay(trace_fd, "[LOAD]   PC:%h addr:%h", ex_mem_bus.pc, mem_stage_inst.core_bus.addr);
+            if (mem_stage_inst.core_bus.rvalid)
+                $fdisplay(trace_fd, "  -> [RAM_RX] %h", mem_stage_inst.core_bus.rdata);
             if ((id_ex_bus.is_branch || id_ex_bus.is_jump || id_ex_bus.jalr) && !stall_ex && !flush_ex) begin
                 if (branch_decision || id_ex_bus.is_jump || id_ex_bus.jalr)
                     $fdisplay(trace_fd, "[JUMP]   PC:%h TAKEN target:%h",

@@ -260,6 +260,7 @@ package core_pkg;
         logic                            csr_we;
         logic                            mret;
         logic                            fencei;        // FENCE.I (Zifencei)
+        logic                            fence;         // FENCE: drain the store buffer in MEM
 
         logic                            trap;
         logic [5:0]                      trap_cause;
@@ -302,6 +303,7 @@ package core_pkg;
         logic                            csr_we;
         logic                            mret;
         logic                            fencei;        // FENCE.I: cache maintenance in MEM
+        logic                            fence;         // FENCE: wait in MEM until the store buffer is empty
 
         priv_mode_e                      priv_mode;     // NEW
         logic                            valid;         // real, non-trapping instruction (minstret)

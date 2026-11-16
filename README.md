@@ -401,3 +401,22 @@ catch them with `sw/hal/include/trap.h`; code written to DMEM runs after
 
 Details: `docs/memory_map.md`. Keep `RTL/System_top.sv`,
 `sw/hal/include/memmap.h` and `sw/hal/wasp/linksc.ld` in sync.
+
+### Store buffer
+
+The core has a 16-entry in-order store buffer (`RTL/store_buffer.sv`, between
+`MEM_stage` and the data bus). Stores to DMEM retire at once and drain in the
+background. Every other store (peripherals, IMEM, the flush register, unmapped
+addresses) waits for an empty buffer and goes out unbuffered, so the access
+faults above stay precise.
+
+A load is answered from the buffer when the buffer holds all its bytes. It
+waits when the overlap is only partial, and otherwise goes past the buffered
+stores. A load from a peripheral waits for an empty buffer.
+
+**FENCE now waits until the buffer is empty.** FENCE.I drains the buffer
+before the D-cache write-back. Code that shares memory with another master
+needs a FENCE between a store and a later load that must observe ordering.
+Parameters on `Core_Top`: `SB_DEPTH` (0 = off), `SB_BUF0/1_BASE/SIZE`
+(`cache_system_top` sets BUF0 = DMEM). AES (32 B input) takes 513 k cycles,
+against 533 k without the buffer.

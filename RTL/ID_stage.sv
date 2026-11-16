@@ -60,7 +60,7 @@ module ID_stage
     wb_sel_e     wb_ctrl_w;
     logic        csr_access_w;
     logic        mret_w;
-    logic        fencei_w;
+    logic        fencei_w, fence_w;
     logic        ecall_w, ebreak_w, illegal_instr_w;
 
     control_unit ctrl_inst (
@@ -89,6 +89,7 @@ module ID_stage
         .csr_access_o    (csr_access_w),
         .mret_o          (mret_w),
         .fencei_o        (fencei_w),
+        .fence_o         (fence_w),
         .ecall_o         (ecall_w),
         .ebreak_o        (ebreak_w),
         .illegal_instr_o (illegal_instr_w)
@@ -275,6 +276,7 @@ module ID_stage
             id_ex_o.csr_use_imm <= csr_use_imm_w;
             id_ex_o.mret        <= mret_w;
             id_ex_o.fencei      <= fencei_w;
+            id_ex_o.fence       <= fence_w;
             id_ex_o.priv_mode   <= PRIV_M;  // core is M-mode only today
             id_ex_o.valid       <= if_id_valid_i;
         end

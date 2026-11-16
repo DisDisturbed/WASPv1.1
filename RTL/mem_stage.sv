@@ -2,15 +2,23 @@
 `default_nettype none
 
 // core_pkg::ex_mem_bundle_t in, core_pkg::mem_wb_bundle_t out. Owns the
-// external obi_data_if.master port (data_bus) and an internal obi_data_if
-// instance (lsu_bus) to load_store_unit. Every field except req passes
-// straight from lsu_bus to data_bus; req is gated by wait_rvalid_q, which
-// is state this stage owns and load_store_unit knows nothing about.
+// external obi_data_if.master port (data_bus) and two internal obi_data_if
+// instances: lsu_bus to load_store_unit and core_bus to the store buffer.
+// Every field except req passes straight from lsu_bus to core_bus; req is
+// gated by wait_rvalid_q, which is state this stage owns and load_store_unit
+// knows nothing about. The store buffer (store_buffer.sv) sits between
+// core_bus and data_bus; FENCE and FENCE.I wait here until it is empty.
 module MEM_stage
     import core_pkg::*;
 #(
     parameter int DATA_WIDTH    = core_pkg::CORE_DATA_WIDTH,
-    parameter int RF_ADDR_WIDTH = core_pkg::CORE_RF_ADDR_WIDTH
+    parameter int RF_ADDR_WIDTH = core_pkg::CORE_RF_ADDR_WIDTH,
+    // store buffer (0 = off) and the ranges whose stores it may buffer
+    parameter int          SB_DEPTH     = 16,
+    parameter logic [31:0] SB_BUF0_BASE = 32'h8000_0000,
+    parameter logic [31:0] SB_BUF0_SIZE = 32'h0001_0000,
+    parameter logic [31:0] SB_BUF1_BASE = 32'h0000_0000,
+    parameter logic [31:0] SB_BUF1_SIZE = 32'h0000_0000
 )(
     input  wire clk,
     input  wire rst_n,
@@ -48,8 +56,26 @@ module MEM_stage
     logic                  lsu_trap_w;          // + bus error on this instruction's access
     logic [5:0]            lsu_trap_cause_w;
 
-    // Internal hop between this stage and load_store_unit -- see header.
+    // Internal hops: this stage <-> load_store_unit, this stage <-> store buffer
     obi_data_if #(.DATA_WIDTH(DATA_WIDTH), .ADDR_WIDTH(DATA_WIDTH)) lsu_bus();
+    obi_data_if #(.DATA_WIDTH(DATA_WIDTH), .ADDR_WIDTH(DATA_WIDTH)) core_bus();
+
+    logic sb_empty, sb_err;
+
+    store_buffer #(
+        .DEPTH     (SB_DEPTH),
+        .BUF0_BASE (SB_BUF0_BASE),
+        .BUF0_SIZE (SB_BUF0_SIZE),
+        .BUF1_BASE (SB_BUF1_BASE),
+        .BUF1_SIZE (SB_BUF1_SIZE)
+    ) sb_inst (
+        .clk     (clk),
+        .rst_n   (rst_n),
+        .core    (core_bus),
+        .mem     (data_bus),
+        .empty_o (sb_empty),
+        .err_o   (sb_err)
+    );
 
     // Avoid delta-cycle issues on Xsim
     logic [31:0]          ex_mem_alu_res;
@@ -68,32 +94,32 @@ module MEM_stage
         if (!rst_n) begin
             wait_rvalid_q <= 1'b0;
         end else if (ex_mem_i.is_load) begin
-            wait_rvalid_q <= (wait_rvalid_q | (lsu_bus.req & data_bus.gnt)) & ~data_bus.rvalid;
+            wait_rvalid_q <= (wait_rvalid_q | (lsu_bus.req & core_bus.gnt)) & ~core_bus.rvalid;
         end else begin
             wait_rvalid_q <= 1'b0;
         end
     end
 
     // req alone is gated; addr/we/be/wdata pass straight through
-    assign data_bus.req   = lsu_bus.req & ~wait_rvalid_q;
-    assign data_bus.addr  = lsu_bus.addr;
-    assign data_bus.we    = lsu_bus.we;
-    assign data_bus.be    = lsu_bus.be;
-    assign data_bus.wdata = lsu_bus.wdata;
+    assign core_bus.req   = lsu_bus.req & ~wait_rvalid_q;
+    assign core_bus.addr  = lsu_bus.addr;
+    assign core_bus.we    = lsu_bus.we;
+    assign core_bus.be    = lsu_bus.be;
+    assign core_bus.wdata = lsu_bus.wdata;
 
-    assign lsu_bus.gnt    = data_bus.gnt;
-    assign lsu_bus.rvalid = data_bus.rvalid;
-    assign lsu_bus.rdata  = data_bus.rdata;
-    assign lsu_bus.err    = data_bus.err;
+    assign lsu_bus.gnt    = core_bus.gnt;
+    assign lsu_bus.rvalid = core_bus.rvalid;
+    assign lsu_bus.rdata  = core_bus.rdata;
+    assign lsu_bus.err    = core_bus.err;
 
     // Access fault: err on the response that belongs to this instruction's
     // own access -- gnt+rvalid in the same cycle (D-cache, error responder;
     // the only slaves that can fail, so stores see it at gnt), or the
     // rvalid a load is waiting for.
     logic bus_resp_w, bus_fault_w;
-    assign bus_resp_w  = (lsu_bus.req & ~wait_rvalid_q & data_bus.gnt & data_bus.rvalid) |
-                         (wait_rvalid_q & data_bus.rvalid);
-    assign bus_fault_w = bus_resp_w & data_bus.err;
+    assign bus_resp_w  = (lsu_bus.req & ~wait_rvalid_q & core_bus.gnt & core_bus.rvalid) |
+                         (wait_rvalid_q & core_bus.rvalid);
+    assign bus_fault_w = bus_resp_w & core_bus.err;
 
     assign lsu_trap_w       = lsu_trap_raw_w | bus_fault_w;
     assign lsu_trap_cause_w = lsu_trap_raw_w     ? lsu_trap_cause_raw_w :
@@ -101,11 +127,13 @@ module MEM_stage
                                                  : TRAP_CAUSE_LOAD_ACCESS_FAULT;
 
     // -----------------------------------------------------------------------
-    assign lsu_busy_o = (lsu_bus.req & ~wait_rvalid_q & (~data_bus.gnt | (ex_mem_i.is_load & ~data_bus.rvalid)))
-                      | (wait_rvalid_q & ~data_bus.rvalid)
-                      | (ex_mem_i.fencei & ~fencei_done_i);   // FENCE.I: wait for the caches
+    assign lsu_busy_o = (lsu_bus.req & ~wait_rvalid_q & (~core_bus.gnt | (ex_mem_i.is_load & ~core_bus.rvalid)))
+                      | (wait_rvalid_q & ~core_bus.rvalid)
+                      | (ex_mem_i.fencei & ~fencei_done_i)    // FENCE.I: drain, then wait for the caches
+                      | (ex_mem_i.fence  & ~sb_empty);        // FENCE: wait until every buffered store is done
 
-    assign fencei_req_o = ex_mem_i.fencei;
+    // the caches start FENCE.I maintenance only once the store buffer is empty
+    assign fencei_req_o = ex_mem_i.fencei & sb_empty;
 
     load_store_unit lsu_inst (
         .data_bus         (lsu_bus),
