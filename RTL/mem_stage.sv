@@ -44,6 +44,11 @@ module MEM_stage
     output logic              fencei_req_o,
     input  wire               fencei_done_i,
 
+    // the next MEM instruction's address (still in EX) and "EX/MEM loads
+    // this cycle": the store buffer matches it against its entries early
+    input  wire [DATA_WIDTH-1:0] ex_addr_i,
+    input  wire               ex_adv_i,
+
     output mem_wb_bundle_t    mem_wb_o
 );
 
@@ -73,6 +78,8 @@ module MEM_stage
         .rst_n   (rst_n),
         .core    (core_bus),
         .mem     (data_bus),
+        .ex_addr_i (ex_addr_i),
+        .ex_adv_i  (ex_adv_i),
         .empty_o (sb_empty),
         .err_o   (sb_err)
     );
@@ -100,8 +107,23 @@ module MEM_stage
         end
     end
 
+    // Bus access faults are taken one cycle late, from a register (timing: a
+    // gnt/err must not reach the trap / PC redirect logic in the same cycle).
+    // In the cycle the faulting response comes, the instruction is held in
+    // MEM (lsu_busy); the next cycle it leaves with the trap, from fault_q.
+    // The access is not issued again meanwhile. Still precise: same cause,
+    // same mtval, nothing younger has retired.
+    logic fault_q;
+    logic bus_resp_w, bus_fault_w;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n)          fault_q <= 1'b0;
+        else if (!stall_i)   fault_q <= 1'b0;          // the instruction left MEM
+        else if (bus_fault_w) fault_q <= 1'b1;
+    end
+
     // req alone is gated; addr/we/be/wdata pass straight through
-    assign core_bus.req   = lsu_bus.req & ~wait_rvalid_q;
+    assign core_bus.req   = lsu_bus.req & ~wait_rvalid_q & ~fault_q;
     assign core_bus.addr  = lsu_bus.addr;
     assign core_bus.we    = lsu_bus.we;
     assign core_bus.be    = lsu_bus.be;
@@ -116,19 +138,19 @@ module MEM_stage
     // own access -- gnt+rvalid in the same cycle (D-cache, error responder;
     // the only slaves that can fail, so stores see it at gnt), or the
     // rvalid a load is waiting for.
-    logic bus_resp_w, bus_fault_w;
-    assign bus_resp_w  = (lsu_bus.req & ~wait_rvalid_q & core_bus.gnt & core_bus.rvalid) |
+    assign bus_resp_w  = (lsu_bus.req & ~wait_rvalid_q & ~fault_q & core_bus.gnt & core_bus.rvalid) |
                          (wait_rvalid_q & core_bus.rvalid);
     assign bus_fault_w = bus_resp_w & core_bus.err;
 
-    assign lsu_trap_w       = lsu_trap_raw_w | bus_fault_w;
+    assign lsu_trap_w       = lsu_trap_raw_w | fault_q;
     assign lsu_trap_cause_w = lsu_trap_raw_w     ? lsu_trap_cause_raw_w :
                               ex_mem_i.is_store  ? TRAP_CAUSE_STORE_ACCESS_FAULT
                                                  : TRAP_CAUSE_LOAD_ACCESS_FAULT;
 
     // -----------------------------------------------------------------------
-    assign lsu_busy_o = (lsu_bus.req & ~wait_rvalid_q & (~core_bus.gnt | (ex_mem_i.is_load & ~core_bus.rvalid)))
+    assign lsu_busy_o = (lsu_bus.req & ~wait_rvalid_q & ~fault_q & (~core_bus.gnt | (ex_mem_i.is_load & ~core_bus.rvalid)))
                       | (wait_rvalid_q & ~core_bus.rvalid)
+                      | bus_fault_w                           // hold one cycle: trap from fault_q next cycle
                       | (ex_mem_i.fencei & ~fencei_done_i)    // FENCE.I: drain, then wait for the caches
                       | (ex_mem_i.fence  & ~sb_empty);        // FENCE: wait until every buffered store is done
 

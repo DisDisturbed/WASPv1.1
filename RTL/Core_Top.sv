@@ -178,6 +178,7 @@ module Core_Top
     assign csr_mie_reg_o = csr_mstatus_mie;
 
     logic ex_busy, lsu_busy;
+    logic [DATA_WIDTH-1:0] ex_addr;          // address of the load/store in EX (store buffer, one cycle early)
     logic [DATA_WIDTH-1:0] mem_forward_data, wb_forward_data;
 
     //hazard unit
@@ -294,7 +295,8 @@ module Core_Top
         .wb_forward_data_i      (wb_forward_data),
         .id_ex_i                (id_ex_bus),
         .ex_mem_o               (ex_mem_bus),
-        .ex_branch_decision_o   (branch_decision)
+        .ex_branch_decision_o   (branch_decision),
+        .ex_addr_o              (ex_addr)
     );
 
     //  MEM
@@ -317,6 +319,8 @@ module Core_Top
         .mem_exc_o              (mem_exc),
         .fencei_req_o           (fencei_req_o),
         .fencei_done_i          (fencei_done_i),
+        .ex_addr_i              (ex_addr),
+        .ex_adv_i               (flush_ex | ~stall_ex),   // EX/MEM register loads this cycle
         .mem_wb_o               (mem_wb_bus)
     );
 

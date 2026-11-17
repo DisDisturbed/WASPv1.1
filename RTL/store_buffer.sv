@@ -44,6 +44,11 @@ module store_buffer #(
     obi_data_if.slave  core,     // from MEM_stage
     obi_data_if.master mem,      // to the data bus
 
+    // the address of the instruction now in EX (next in MEM) and "it moves to
+    // MEM at this clock edge": the forwarding match is computed one cycle early
+    input  wire [31:0] ex_addr_i,
+    input  wire        ex_adv_i,
+
     output logic empty_o,
     output logic err_o           // a buffered store got a bus error (sticky)
 );
@@ -52,9 +57,17 @@ module store_buffer #(
     localparam int PW = (D > 1) ? $clog2(D) : 1;
     localparam int CW = $clog2(D + 1);
 
+    // bufferable ranges are power-of-two windows aligned to their size: a bit
+    // compare, no subtract on the request path (timing). size 0 = not used.
     function automatic logic in_rng(logic [31:0] a, logic [31:0] base, logic [31:0] size);
-        return (size != 0) && (a >= base) && (a - base < size);
+        return (size != 0) && (((a ^ base) & ~(size - 32'd1)) == 32'd0);
     endfunction
+
+    initial begin
+        if ((BUF0_SIZE != 0 && ((BUF0_SIZE & (BUF0_SIZE - 1)) != 0 || (BUF0_BASE & (BUF0_SIZE - 1)) != 0)) ||
+            (BUF1_SIZE != 0 && ((BUF1_SIZE & (BUF1_SIZE - 1)) != 0 || (BUF1_BASE & (BUF1_SIZE - 1)) != 0)))
+            $fatal(1, "store_buffer: BUF0/BUF1 must be power-of-two windows aligned to their size");
+    end
 
     // ---------------------------------------------------------------- entries
     logic [29:0]   e_wa [D];           // word address
@@ -70,6 +83,30 @@ module store_buffer #(
                                             in_rng(core.addr, BUF1_BASE, BUF1_SIZE));
     wire [29:0] u_word    = core.addr[31:2];
 
+    // ---------------------------------------------------------------- early match
+    // (timing) The word compare against every entry happens while the next
+    // MEM instruction is still in EX, and only the result is registered, so
+    // MEM reads flops instead of a 16-way address compare:
+    //   match_d[k] = entry k holds ex_addr's word at the next clock edge:
+    //                an entry valid now and not drained this cycle, or the
+    //                store being pushed into slot tail_q this cycle
+    //   match_q    = match_d of the cycle the instruction moved EX -> MEM; while
+    //                it waits in MEM, entries that drain are dropped (v_q), and
+    //                no store can be pushed meanwhile (MEM is the only source)
+    logic [D-1:0] v_q;             // entry valid
+    logic [D-1:0] match_q, match_d;
+    wire  [29:0]  ex_word = ex_addr_i[31:2];
+
+    wire st_accept;                // a store is pushed into slot tail_q this cycle
+    wire pop;                      // slot head_q drains this cycle
+
+    always_comb begin
+        for (int k = 0; k < D; k++) begin
+            match_d[k] = v_q[k] && !(pop && PW'(k) == head_q) && (e_wa[k] == ex_word);
+            if (st_accept && PW'(k) == tail_q) match_d[k] = (u_word == ex_word);
+        end
+    end
+
     // bytes of the upstream word held in the buffer (youngest store per byte)
     logic [3:0]  fwd_cov;
     logic [31:0] fwd_data;
@@ -79,7 +116,7 @@ module store_buffer #(
         fwd_data = '0;
         for (int i = 0; i < D; i++) begin                  // oldest -> youngest
             k = PW'((int'(head_q) + i) % D);
-            if (CW'(i) < cnt_q && e_wa[k] == u_word)
+            if (v_q[k] && match_q[k])
                 for (int b = 0; b < 4; b++)
                     if (e_be[k][b]) begin
                         fwd_cov[b]          = 1'b1;
@@ -138,7 +175,7 @@ module store_buffer #(
     end
 
     // ---------------------------------------------------------------- upstream answers
-    wire st_accept = u_st_buf && !full;
+    assign st_accept = u_st_buf && !full;
     wire pt_rvalid = (pt_sel || (out_q && out_pt_q)) && mem.rvalid;
     wire dr_rvalid = (dr_sel || (out_q && !out_pt_q)) && mem.rvalid;
 
@@ -150,7 +187,7 @@ module store_buffer #(
     end
 
     // ---------------------------------------------------------------- state
-    wire pop = dr_sel && mem.gnt;
+    assign pop = dr_sel && mem.gnt;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -161,7 +198,17 @@ module store_buffer #(
             out_q    <= 1'b0;
             out_pt_q <= 1'b0;
             err_o    <= 1'b0;
+            v_q      <= '0;
+            match_q  <= '0;
         end else begin
+            // entry valid bits and the early forwarding match (see above)
+            for (int k = 0; k < D; k++) begin
+                if (pop && PW'(k) == head_q)      v_q[k] <= 1'b0;
+                if (st_accept && PW'(k) == tail_q) v_q[k] <= 1'b1;
+            end
+            if (ex_adv_i) match_q <= match_d;
+            else if (pop) match_q[head_q] <= 1'b0;
+
             if (st_accept) begin
                 e_wa[tail_q] <= u_word;
                 e_be[tail_q] <= core.be;

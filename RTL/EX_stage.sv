@@ -30,11 +30,16 @@ module EX_stage
 
     output  ex_mem_bundle_t          ex_mem_o,
 
-    output logic                    ex_branch_decision_o
+    output logic                    ex_branch_decision_o,
+
+    // address a load/store in EX will use in MEM (the ALU result, before the
+    // EX/MEM register): the store buffer compares it one cycle early (timing)
+    output logic [DATA_WIDTH-1:0]   ex_addr_o
 );
 
 
     logic [DATA_WIDTH-1:0] alu_result_w;
+    assign ex_addr_o = alu_result_w;
     logic                  alu_zero_w, alu_error_w, alu_carry_w;
     logic [DATA_WIDTH-1:0] alu_mux_a_val;
     logic [DATA_WIDTH-1:0] forward_mux_b_val;
