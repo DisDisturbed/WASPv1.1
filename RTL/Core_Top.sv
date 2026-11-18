@@ -47,7 +47,12 @@ module Core_Top
     output logic fencei_req_o,
     input  wire  fencei_done_i,
 
-    output logic csr_mie_reg_o
+    output logic csr_mie_reg_o,
+
+    // the load in the EX/MEM register (flops only), for a cache that looks
+    // loads up before they reach data_bus (WASP_SoC fast loads). Unused in WASP.
+    output logic                  ld_hint_v_o,
+    output logic [DATA_WIDTH-1:0] ld_hint_addr_o
 );
     //internal wires for routing hazards and mux selections
     logic stall_if, stall_id, stall_ex, flush_if, flush_id, flush_ex;
@@ -298,6 +303,9 @@ module Core_Top
         .ex_branch_decision_o   (branch_decision),
         .ex_addr_o              (ex_addr)
     );
+
+    assign ld_hint_v_o    = ex_mem_bus.is_load & ~ex_mem_bus.trap;
+    assign ld_hint_addr_o = ex_mem_bus.alu_res;
 
     //  MEM
     MEM_stage #(
